@@ -10,11 +10,26 @@ struct ContentView: View {
         NavigationSplitView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    Toggle("代理开关", isOn: $isRunning)
-                        .toggleStyle(SwitchToggleStyle(tint: .green))
-                        .onChange(of: isRunning) { _, newValue in
-                            toggleProxy(newValue)
+                    Toggle("代理开关", isOn: Binding(
+                        get: { isRunning },
+                        set: { newValue in
+                            if newValue {
+                                proxyServer = ProxyServer(port: 10808, logStore: logStore)
+                                do {
+                                    try proxyServer?.start()
+                                    isRunning = true
+                                } catch {
+                                    print("Failed to start proxy: \(error)")
+                                    isRunning = false
+                                }
+                            } else {
+                                proxyServer?.stop()
+                                proxyServer = nil
+                                isRunning = false
+                            }
                         }
+                    ))
+                    .toggleStyle(SwitchToggleStyle(tint: .green))
                 }
                 .padding()
                 .background(Color(.systemGray6))
@@ -74,28 +89,7 @@ struct ContentView: View {
         }
     }
 
-    private func toggleProxy(_ enabled: Bool) {
-        if enabled {
-            startProxy()
-        } else {
-            stopProxy()
-        }
-    }
 
-    private func startProxy() {
-        proxyServer = ProxyServer(port: 10808, logStore: logStore)
-        do {
-            try proxyServer?.start()
-        } catch {
-            print("Failed to start proxy: \(error)")
-            isRunning = false
-        }
-    }
-
-    private func stopProxy() {
-        proxyServer?.stop()
-        proxyServer = nil
-    }
 
     private func clearLogs() {
         logStore.clear()
