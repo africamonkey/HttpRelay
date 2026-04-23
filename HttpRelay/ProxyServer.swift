@@ -1,12 +1,18 @@
 import Foundation
 import Network
 
+protocol ProxyServerDelegate: AnyObject {
+    func proxyServer(_ server: ProxyServer, didFailWithError error: NWError)
+}
+
 final class ProxyServer {
     typealias ConnectionHandler = (NWConnection) -> Void
 
     private let port: UInt16
     private var listener: NWListener?
     private let logStore: LogStore
+
+    weak var delegate: ProxyServerDelegate?
 
     init(port: UInt16 = 10808, logStore: LogStore) {
         self.port = port
@@ -20,11 +26,12 @@ final class ProxyServer {
         listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
 
         listener?.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
             switch state {
             case .ready:
-                print("ProxyServer listening on port \(self?.port ?? 0)")
+                print("ProxyServer listening on port \(self.port)")
             case .failed(let error):
-                print("ProxyServer failed: \(error)")
+                self.delegate?.proxyServer(self, didFailWithError: error)
             default:
                 break
             }
@@ -53,7 +60,7 @@ final class ProxyServer {
             guard let self = self else { return }
 
             if let error = error {
-                print("Receive error: \(error)")
+                self.logStore.log(host: connection.endpoint?.description ?? "unknown", port: 0, status: .error)
                 connection.cancel()
                 return
             }
@@ -103,40 +110,77 @@ final class ProxyServer {
         logStore.log(host: host, port: port, status: .connect)
         logStore.incrementConnections()
 
-        establishTunnel(host: host, port: port, clientConnection: connection)
+        do {
+            try establishTunnel(host: host, port: port, clientConnection: connection)
+        } catch {
+            logStore.log(host: host, port: port, status: .error)
+            logStore.decrementConnections()
+            sendErrorResponse(connection, code: "502 Bad Gateway")
+        }
     }
 
-    private func establishTunnel(host: String, port: Int, clientConnection: NWConnection) {
+    private func establishTunnel(host: String, port: Int, clientConnection: NWConnection) throws {
         let tunnelManager = TunnelManager(
             host: host,
             port: port,
             logStore: logStore
         )
 
+        var hasCompleted = false
+        let completionLock = NSLock()
+
         tunnelManager.onConnected = { [weak self] in
+            completionLock.lock()
+            guard !hasCompleted else {
+                completionLock.unlock()
+                return
+            }
+            hasCompleted = true
+            completionLock.unlock()
             self?.sendSuccessResponse(clientConnection)
         }
 
         tunnelManager.onClose = { [weak self] in
+            completionLock.lock()
+            guard !hasCompleted else {
+                completionLock.unlock()
+                return
+            }
+            hasCompleted = true
+            completionLock.unlock()
             self?.logStore.log(host: host, port: port, status: .closed)
             self?.logStore.decrementConnections()
         }
 
         tunnelManager.onError = { [weak self] in
+            completionLock.lock()
+            guard !hasCompleted else {
+                completionLock.unlock()
+                return
+            }
+            hasCompleted = true
+            completionLock.unlock()
             self?.logStore.log(host: host, port: port, status: .error)
             self?.logStore.decrementConnections()
             clientConnection.cancel()
         }
 
-        tunnelManager.start(clientConnection: clientConnection)
+        do {
+            try tunnelManager.start(clientConnection: clientConnection)
+        } catch {
+            completionLock.lock()
+            hasCompleted = true
+            completionLock.unlock()
+            throw error
+        }
     }
 
     private func sendSuccessResponse(_ connection: NWConnection) {
         let response = "HTTP/1.1 200 Connection Established\r\n\r\n"
         if let data = response.data(using: .utf8) {
-            connection.send(content: data, completion: .contentProcessed { error in
+            connection.send(content: data, completion: .contentProcessed { [weak self] error in
                 if let error = error {
-                    print("Send response error: \(error)")
+                    self?.logStore.log(host: connection.endpoint?.description ?? "unknown", port: 0, status: .error)
                 }
             })
         }
