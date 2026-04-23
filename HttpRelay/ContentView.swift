@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var logStore = LogStore()
     @State private var proxyServer: ProxyServer?
     @State private var connectionCount: Int = 0
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationSplitView {
@@ -19,7 +20,7 @@ struct ContentView: View {
                                     try proxyServer?.start()
                                     isRunning = true
                                 } catch {
-                                    print("Failed to start proxy: \(error)")
+                                    errorMessage = "启动代理失败: \(error.localizedDescription)"
                                     isRunning = false
                                 }
                             } else {
@@ -86,6 +87,16 @@ struct ContentView: View {
         }
         .onChange(of: logStore.activeConnections) { _, newValue in
             connectionCount = newValue
+        }
+        .alert("错误", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("确定", role: .cancel) {
+                errorMessage = nil
+            }
+        } message: {
+            Text(errorMessage ?? "")
         }
     }
 
