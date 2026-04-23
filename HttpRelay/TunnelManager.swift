@@ -39,10 +39,12 @@ final class TunnelManager {
                 self.startForwarding()
             case .failed(let error):
                 print("Server connection failed: \(error)")
+                self.clientConnection?.cancel()
                 DispatchQueue.main.async {
                     self.onError?()
                 }
             case .cancelled:
+                self.clientConnection?.cancel()
                 DispatchQueue.main.async {
                     self.onClose?()
                 }
@@ -81,11 +83,13 @@ final class TunnelManager {
             if let error = error {
                 print("Forward \(direction) error: \(error)")
                 source.cancel()
+                destination?.cancel()
                 return
             }
 
             if isComplete {
                 source.cancel()
+                destination?.cancel()
                 return
             }
 
@@ -94,6 +98,7 @@ final class TunnelManager {
                     if let error = error {
                         print("Send \(direction) error: \(error)")
                         source.cancel()
+                        destination?.cancel()
                         return
                     }
                     self?.forwardData(from: source, to: destination, direction: direction)
