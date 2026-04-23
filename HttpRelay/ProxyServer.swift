@@ -60,7 +60,7 @@ final class ProxyServer {
             guard let self = self else { return }
 
             if let error = error {
-                self.logStore.log(host: connection.endpoint?.description ?? "unknown", port: 0, status: .error)
+                self.logStore.log(host: String(describing: connection.endpoint), port: 0, status: .error)
                 connection.cancel()
                 return
             }
@@ -165,14 +165,7 @@ final class ProxyServer {
             clientConnection.cancel()
         }
 
-        do {
-            try tunnelManager.start(clientConnection: clientConnection)
-        } catch {
-            completionLock.lock()
-            hasCompleted = true
-            completionLock.unlock()
-            throw error
-        }
+        tunnelManager.start(clientConnection: clientConnection)
     }
 
     private func sendSuccessResponse(_ connection: NWConnection) {
@@ -180,7 +173,7 @@ final class ProxyServer {
         if let data = response.data(using: .utf8) {
             connection.send(content: data, completion: .contentProcessed { [weak self] error in
                 if let error = error {
-                    self?.logStore.log(host: connection.endpoint?.description ?? "unknown", port: 0, status: .error)
+                    self?.logStore.log(host: String(describing: connection.endpoint), port: 0, status: .error)
                 }
             })
         }

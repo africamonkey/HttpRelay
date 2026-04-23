@@ -55,7 +55,7 @@ final class TunnelManager {
 
         serverConnection?.start(queue: queue)
 
-        clientConnection?.stateUpdateHandler = { [weak self] state in
+        self.clientConnection?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
 
             switch state {
