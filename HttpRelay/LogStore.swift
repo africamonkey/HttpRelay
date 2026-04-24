@@ -10,7 +10,7 @@ final class LogStore {
 
     func log(host: String, port: Int, status: LogEntry.LogStatus) {
         let newEntry = LogEntry(timestamp: Date(), host: host, port: port, status: status)
-        if entries.count >= 500 {
+        if entries.count >= 100 {
             entries = [newEntry] + entries.dropLast()
         } else {
             entries = [newEntry] + entries
