@@ -12,6 +12,7 @@ final class ProxyServer {
     private var listener: NWListener?
     private let logStore: LogStore
     private var activeTunnels: [String: TunnelManager] = [:]
+    private let tunnelsLock = NSLock()
 
     weak var delegate: ProxyServerDelegate?
 
@@ -129,8 +130,10 @@ final class ProxyServer {
             logStore: logStore
         )
 
-        print("[ProxyServer] tunnelManager created, storing reference")
-        activeTunnels[host + ":\(port)"] = tunnelManager
+        let key = host + ":\(port)"
+        tunnelsLock.lock()
+        activeTunnels[key] = tunnelManager
+        tunnelsLock.unlock()
 
         var hasCompleted = false
         let completionLock = NSLock()
@@ -147,7 +150,11 @@ final class ProxyServer {
             completionLock.unlock()
             print("[ProxyServer] calling sendSuccessResponse for \(host):\(port)")
             self?.sendSuccessResponse(clientConnection)
-            self?.activeTunnels.removeValue(forKey: host + ":\(port)")
+            if let self = self {
+                self.tunnelsLock.lock()
+                self.activeTunnels.removeValue(forKey: host + ":\(port)")
+                self.tunnelsLock.unlock()
+            }
             print("[ProxyServer] done with onConnected for \(host):\(port)")
         }
 
@@ -162,7 +169,11 @@ final class ProxyServer {
             completionLock.unlock()
             self?.logStore.log(host: host, port: port, status: .closed)
             self?.logStore.decrementConnections()
-            self?.activeTunnels.removeValue(forKey: host + ":\(port)")
+            if let self = self {
+                self.tunnelsLock.lock()
+                self.activeTunnels.removeValue(forKey: host + ":\(port)")
+                self.tunnelsLock.unlock()
+            }
         }
 
         tunnelManager.onError = { [weak self] in
@@ -177,7 +188,11 @@ final class ProxyServer {
             self?.logStore.log(host: host, port: port, status: .error)
             self?.logStore.decrementConnections()
             clientConnection.cancel()
-            self?.activeTunnels.removeValue(forKey: host + ":\(port)")
+            if let self = self {
+                self.tunnelsLock.lock()
+                self.activeTunnels.removeValue(forKey: host + ":\(port)")
+                self.tunnelsLock.unlock()
+            }
         }
 
         tunnelManager.start(clientConnection: clientConnection)
