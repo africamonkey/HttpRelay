@@ -135,6 +135,9 @@ final class ProxyServer {
             logStore.decrementConnections()
             sendErrorResponse(connection, code: "502 Bad Gateway")
         }
+
+        print("[ProxyServer] processRequest: continuing to wait for more data on connection")
+        self.receiveHTTPRequest(connection)
     }
 
     private func establishTunnel(host: String, port: Int, clientConnection: NWConnection) throws {
