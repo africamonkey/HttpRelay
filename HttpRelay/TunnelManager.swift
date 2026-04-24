@@ -97,48 +97,66 @@ final class TunnelManager {
         print("[TunnelManager]   client state: \(client.state)")
         print("[TunnelManager]   server state: \(server.state)")
 
-        print("[TunnelManager] starting client->server forwarding")
-        forwardData(from: client, to: server, direction: "client->server")
-        print("[TunnelManager] starting server->client forwarding")
-        forwardData(from: server, to: client, direction: "server->client")
+        print("[TunnelManager] starting bidirectional forwarding")
+        forwardDataBidirectional(client: client, server: server)
     }
 
-    private func forwardData(from source: NWConnection, to destination: NWConnection, direction: String) {
-        print("[TunnelManager] forwardData: starting receive for \(direction)")
-        source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+    private func forwardDataBidirectional(client: NWConnection, server: NWConnection) {
+        print("[TunnelManager] forwardDataBidirectional: starting both directions")
+
+        client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            print("[TunnelManager] forwardData: \(direction) receive callback - data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
+            print("[TunnelManager] client->server: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
 
-            if let error = error {
-                print("[TunnelManager] \(direction) receive error: \(error)")
-                source.cancel()
-                destination.cancel()
-                return
-            }
-
-            if isComplete {
-                print("[TunnelManager] \(direction) complete")
-                source.cancel()
-                destination.cancel()
+            if error != nil || isComplete {
+                print("[TunnelManager] client->server error/complete, cancelling")
+                client.cancel()
+                server.cancel()
                 return
             }
 
             if let data = data, !data.isEmpty {
-                print("[TunnelManager] \(direction) sending \(data.count) bytes to \(destination.endpoint)")
-                destination.send(content: data, completion: .contentProcessed { error in
-                    if let error = error {
-                        print("[TunnelManager] \(direction) send error: \(error)")
-                        source.cancel()
-                        destination.cancel()
+                print("[TunnelManager] client->server forwarding \(data.count) bytes")
+                server.send(content: data, completion: .contentProcessed { [weak self] error in
+                    if error != nil {
+                        print("[TunnelManager] server send error")
+                        client.cancel()
+                        server.cancel()
                         return
                     }
-                    print("[TunnelManager] \(direction) send completed, recursing")
-                    self.forwardData(from: source, to: destination, direction: direction)
+                    self?.forwardDataBidirectional(client: client, server: server)
                 })
             } else {
-                print("[TunnelManager] \(direction) no data (empty), recursing")
-                self.forwardData(from: source, to: destination, direction: direction)
+                self.forwardDataBidirectional(client: client, server: server)
+            }
+        }
+
+        server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+
+            print("[TunnelManager] server->client: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
+
+            if error != nil || isComplete {
+                print("[TunnelManager] server->client error/complete, cancelling")
+                client.cancel()
+                server.cancel()
+                return
+            }
+
+            if let data = data, !data.isEmpty {
+                print("[TunnelManager] server->client forwarding \(data.count) bytes")
+                client.send(content: data, completion: .contentProcessed { [weak self] error in
+                    if error != nil {
+                        print("[TunnelManager] client send error")
+                        client.cancel()
+                        server.cancel()
+                        return
+                    }
+                    self?.forwardDataBidirectional(client: client, server: server)
+                })
+            } else {
+                self.forwardDataBidirectional(client: client, server: server)
             }
         }
     }
