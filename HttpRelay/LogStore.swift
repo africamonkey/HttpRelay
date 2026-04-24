@@ -4,29 +4,37 @@ import Observation
 @Observable
 @MainActor
 final class LogStore {
-    var entries: [LogEntry] = []
-    var activeConnections: Int = 0
+    private var _entries: [LogEntry] = []
+    private var _activeConnections: Int = 0
+
+    var entries: [LogEntry] {
+        _entries
+    }
+
+    var activeConnections: Int {
+        _activeConnections
+    }
 
     func log(host: String, port: Int, status: LogEntry.LogStatus) {
         let entry = LogEntry(timestamp: Date(), host: host, port: port, status: status)
-        entries.insert(entry, at: 0)
-        if entries.count > 500 {
-            entries.removeLast()
+        _entries = [entry] + _entries
+        if _entries.count > 500 {
+            _entries = Array(_entries.prefix(500))
         }
     }
 
     func incrementConnections() {
-        activeConnections += 1
+        _activeConnections += 1
     }
 
     func decrementConnections() {
-        if activeConnections > 0 {
-            activeConnections -= 1
+        if _activeConnections > 0 {
+            _activeConnections -= 1
         }
     }
 
     func clear() {
-        entries.removeAll()
-        activeConnections = 0
+        _entries = []
+        _activeConnections = 0
     }
 }
