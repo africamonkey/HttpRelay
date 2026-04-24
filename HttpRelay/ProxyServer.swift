@@ -60,8 +60,11 @@ final class ProxyServer {
     }
 
     private func receiveHTTPRequest(_ connection: NWConnection) {
+        print("[ProxyServer] receiveHTTPRequest: starting receive on \(connection.endpoint)")
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
+
+            print("[ProxyServer] receiveHTTPRequest callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
             if let error = error {
                 self.logStore.log(host: String(describing: connection.endpoint), port: 0, status: .error)
@@ -70,35 +73,43 @@ final class ProxyServer {
             }
 
             if isComplete {
+                print("[ProxyServer] receiveHTTPRequest: connection completed")
                 connection.cancel()
                 return
             }
 
             if let data = data, let request = String(data: data, encoding: .utf8) {
+                print("[ProxyServer] receiveHTTPRequest: processing request")
                 self.processRequest(request, connection: connection)
             } else {
-                connection.cancel()
+                print("[ProxyServer] receiveHTTPRequest: no data, waiting more...")
+                self.receiveHTTPRequest(connection)
             }
         }
     }
 
     private func processRequest(_ request: String, connection: NWConnection) {
+        print("[ProxyServer] processRequest: parsing request")
         let lines = request.split(separator: "\r\n")
         guard let firstLine = lines.first else {
+            print("[ProxyServer] processRequest: no first line, cancelling")
             connection.cancel()
             return
         }
 
         let components = firstLine.split(separator: " ")
         guard components.count >= 2 else {
+            print("[ProxyServer] processRequest: not enough components, cancelling")
             connection.cancel()
             return
         }
 
         let method = String(components[0])
         let target = String(components[1])
+        print("[ProxyServer] processRequest: method=\(method), target=\(target)")
 
         guard method == "CONNECT" else {
+            print("[ProxyServer] processRequest: not CONNECT, sending 405")
             sendErrorResponse(connection, code: "405 Method Not Allowed")
             return
         }
@@ -106,17 +117,20 @@ final class ProxyServer {
         let hostPort = target.split(separator: ":")
         guard hostPort.count == 2,
               let port = Int(hostPort[1]) else {
+            print("[ProxyServer] processRequest: invalid target, sending 400")
             sendErrorResponse(connection, code: "400 Bad Request")
             return
         }
 
         let host = String(hostPort[0])
+        print("[ProxyServer] processRequest: connecting to \(host):\(port)")
         logStore.log(host: host, port: port, status: .connect)
         logStore.incrementConnections()
 
         do {
             try establishTunnel(host: host, port: port, clientConnection: connection)
         } catch {
+            print("[ProxyServer] processRequest: establishTunnel failed: \(error)")
             logStore.log(host: host, port: port, status: .error)
             logStore.decrementConnections()
             sendErrorResponse(connection, code: "502 Bad Gateway")

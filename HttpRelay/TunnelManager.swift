@@ -94,11 +94,12 @@ final class TunnelManager {
         print("[TunnelManager]   server state: \(server.state)")
 
         print("[TunnelManager] starting bidirectional forwarding")
+        print("[TunnelManager]   about to call client.receive (waiting for Windows data)")
 
         client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            print("[TunnelManager] client->server: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
+            print("[TunnelManager] client->server callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
             if error != nil || isComplete {
                 print("[TunnelManager] client->server error/complete, cancelling")
@@ -119,6 +120,7 @@ final class TunnelManager {
                     self.forwardToServer(client: client, server: server)
                 })
             } else {
+                print("[TunnelManager] client->server: no data yet, waiting...")
                 self.forwardToServer(client: client, server: server)
             }
         }
@@ -126,7 +128,7 @@ final class TunnelManager {
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            print("[TunnelManager] server->client: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
+            print("[TunnelManager] server->client callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
             if error != nil || isComplete {
                 print("[TunnelManager] server->client error/complete, cancelling")
@@ -147,16 +149,18 @@ final class TunnelManager {
                     self.forwardToClient(client: client, server: server)
                 })
             } else {
+                print("[TunnelManager] server->client: no data yet, waiting...")
                 self.forwardToClient(client: client, server: server)
             }
         }
     }
 
     private func forwardToServer(client: NWConnection, server: NWConnection) {
+        print("[TunnelManager] forwardToServer: calling receive")
         client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            print("[TunnelManager] client->server: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
+            print("[TunnelManager] forwardToServer callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
 
             if error != nil || isComplete {
                 client.cancel()
@@ -165,7 +169,7 @@ final class TunnelManager {
             }
 
             if let data = data, !data.isEmpty {
-                print("[TunnelManager] client->server forwarding \(data.count) bytes")
+                print("[TunnelManager] forwardToServer: forwarding \(data.count) bytes")
                 server.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
                         client.cancel()
@@ -175,16 +179,18 @@ final class TunnelManager {
                     self.forwardToServer(client: client, server: server)
                 })
             } else {
+                print("[TunnelManager] forwardToServer: no data, continuing...")
                 self.forwardToServer(client: client, server: server)
             }
         }
     }
 
     private func forwardToClient(client: NWConnection, server: NWConnection) {
+        print("[TunnelManager] forwardToClient: calling receive")
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            print("[TunnelManager] server->client: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
+            print("[TunnelManager] forwardToClient callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
 
             if error != nil || isComplete {
                 client.cancel()
@@ -193,7 +199,7 @@ final class TunnelManager {
             }
 
             if let data = data, !data.isEmpty {
-                print("[TunnelManager] server->client forwarding \(data.count) bytes")
+                print("[TunnelManager] forwardToClient: forwarding \(data.count) bytes")
                 client.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
                         client.cancel()
@@ -203,6 +209,7 @@ final class TunnelManager {
                     self.forwardToClient(client: client, server: server)
                 })
             } else {
+                print("[TunnelManager] forwardToClient: no data, continuing...")
                 self.forwardToClient(client: client, server: server)
             }
         }
