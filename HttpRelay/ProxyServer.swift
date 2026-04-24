@@ -61,7 +61,7 @@ final class ProxyServer {
 
     private func receiveHTTPRequest(_ connection: NWConnection) {
         print("[ProxyServer] receiveHTTPRequest: starting receive on \(connection.endpoint)")
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        connection.receive(minimumIncompleteLength: 0, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
             print("[ProxyServer] receiveHTTPRequest callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
@@ -78,13 +78,43 @@ final class ProxyServer {
                 return
             }
 
-            if let data = data, let request = String(data: data, encoding: .utf8) {
-                print("[ProxyServer] receiveHTTPRequest: processing request")
-                self.processRequest(request, connection: connection)
-            } else {
-                print("[ProxyServer] receiveHTTPRequest: no data, waiting more...")
-                self.receiveHTTPRequest(connection)
+            if let data = data, !data.isEmpty {
+                print("[ProxyServer] receiveHTTPRequest: received \(data.count) bytes, checking if tunnel exists...")
+
+                if let tunnelKey = self.findTunnelKey(for: connection) {
+                    print("[ProxyServer] receiveHTTPRequest: forwarding \(data.count) bytes to existing tunnel")
+                    self.forwardToTunnel(connection: connection, data: data)
+                } else if let request = String(data: data, encoding: .utf8) {
+                    print("[ProxyServer] receiveHTTPRequest: processing as HTTP request")
+                    self.processRequest(request, connection: connection)
+                } else {
+                    print("[ProxyServer] receiveHTTPRequest: binary data but no tunnel, ignoring")
+                }
             }
+
+            self.receiveHTTPRequest(connection)
+        }
+    }
+
+private func findTunnelKey(for connection: NWConnection) -> String? {
+        tunnelsLock.lock()
+        defer { tunnelsLock.unlock() }
+        let searchKey = activeTunnels.keys.first { key in
+            if let tunnel = activeTunnels[key] {
+                return tunnel.clientConnectionRef === connection
+            }
+            return false
+        }
+        return searchKey
+    }
+
+    private func forwardToTunnel(connection: NWConnection, data: Data) {
+        tunnelsLock.lock()
+        let tunnel = activeTunnels.first { $0.value.clientConnectionRef === connection }?.value
+        tunnelsLock.unlock()
+
+        if let tunnel = tunnel {
+            tunnel.receiveClientData(data)
         }
     }
 
@@ -147,7 +177,7 @@ final class ProxyServer {
             logStore: logStore
         )
 
-        let key = host + ":\(port)"
+        let key = "\(host):\(port):\(ObjectIdentifier(clientConnection as AnyObject))"
         tunnelsLock.lock()
         activeTunnels[key] = tunnelManager
         tunnelsLock.unlock()

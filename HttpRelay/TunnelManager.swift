@@ -230,4 +230,23 @@ case .ready:
         clientConnection?.cancel()
         serverConnection?.cancel()
     }
+
+    func receiveClientData(_ data: Data) {
+        print("[TunnelManager] receiveClientData: received \(data.count) bytes from ProxyServer")
+        guard let server = serverConnection else {
+            print("[TunnelManager] receiveClientData: no server connection")
+            return
+        }
+        server.send(content: data, completion: .contentProcessed { [weak self] error in
+            if let error = error {
+                print("[TunnelManager] receiveClientData: send error: \(error)")
+                return
+            }
+            print("[TunnelManager] receiveClientData: forwarded \(data.count) bytes to server")
+        })
+    }
+
+    var clientConnectionRef: NWConnection? {
+        return clientConnection
+    }
 }
