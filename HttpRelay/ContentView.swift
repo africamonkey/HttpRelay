@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @State private var isRunning = false
@@ -27,6 +28,7 @@ struct ContentView: View {
                             do {
                                 try proxyServer?.start()
                                 isRunning = true
+                                UIApplication.shared.isIdleTimerDisabled = true
                             } catch {
                                 errorMessage = "Failed to start proxy: \(error.localizedDescription)"
                                 isRunning = false
@@ -35,6 +37,7 @@ struct ContentView: View {
                             proxyServer?.stop()
                             proxyServer = nil
                             isRunning = false
+                            UIApplication.shared.isIdleTimerDisabled = false
                         }
                     }
                 ))
