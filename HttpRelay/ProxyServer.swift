@@ -1,10 +1,6 @@
 import Foundation
 import Network
 
-protocol ProxyServerDelegate: AnyObject {
-    func proxyServer(_ server: ProxyServer, didFailWithError error: NWError)
-}
-
 final class ProxyServer {
     typealias ConnectionHandler = (NWConnection) -> Void
 
@@ -13,12 +9,35 @@ final class ProxyServer {
     private let logStore: LogStore
     private var activeTunnels: [String: TunnelManager] = [:]
     private let tunnelsLock = NSLock()
+    private(set) var localIP: String = "—"
 
-    weak var delegate: ProxyServerDelegate?
+    var onLocalIPReady: ((String) -> Void)?
 
     init(port: UInt16 = 10808, logStore: LogStore) {
         self.port = port
         self.logStore = logStore
+    }
+
+    private func getLocalIPAddress() -> String? {
+        var address: String?
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
+            let interface = ptr.pointee
+            let addrFamily = interface.ifa_addr.pointee.sa_family
+            if addrFamily == UInt8(AF_INET) {
+                let name = String(cString: interface.ifa_name)
+                if name == "en0" || name == "en1" {
+                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                               &hostname, socklen_t(hostname.count),
+                               nil, socklen_t(0), NI_NUMERICHOST)
+                    address = String(cString: hostname)
+                }
+            }
+        }
+        return address
     }
 
     func start() throws {
@@ -32,9 +51,11 @@ final class ProxyServer {
             switch state {
             case .ready:
                 print("[ProxyServer] listening on port \(self.port)")
+                self.localIP = self.getLocalIPAddress() ?? "—"
+                print("[ProxyServer] local IP: \(self.localIP)")
+                self.onLocalIPReady?(self.localIP)
             case .failed(let error):
                 print("[ProxyServer] failed: \(error)")
-                self.delegate?.proxyServer(self, didFailWithError: error)
             default:
                 break
             }

@@ -19,6 +19,9 @@ struct ContentView: View {
                     set: { newValue in
                         if newValue {
                             proxyServer = ProxyServer(port: 10808, logStore: logStore)
+                            proxyServer?.onLocalIPReady = { [self] ip in
+                                localIP = ip
+                            }
                             do {
                                 try proxyServer?.start()
                                 isRunning = true
