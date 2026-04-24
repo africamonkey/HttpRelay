@@ -140,12 +140,15 @@ final class ProxyServer {
             completionLock.lock()
             guard !hasCompleted else {
                 completionLock.unlock()
+                print("[ProxyServer] onConnected but hasCompleted=true, ignoring")
                 return
             }
             hasCompleted = true
             completionLock.unlock()
+            print("[ProxyServer] calling sendSuccessResponse for \(host):\(port)")
             self?.sendSuccessResponse(clientConnection)
             self?.activeTunnels.removeValue(forKey: host + ":\(port)")
+            print("[ProxyServer] done with onConnected for \(host):\(port)")
         }
 
         tunnelManager.onClose = { [weak self] in

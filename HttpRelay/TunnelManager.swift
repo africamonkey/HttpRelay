@@ -37,10 +37,14 @@ final class TunnelManager {
             switch state {
             case .ready:
                 print("[TunnelManager] server connection READY to \(self.host):\(self.port)")
+                print("[TunnelManager] about to call onConnected and log...")
                 DispatchQueue.main.async {
+                    print("[TunnelManager] dispatching onConnected callback")
                     self.onConnected?()
+                    print("[TunnelManager] logging connected status")
                     self.logStore.log(host: self.host, port: self.port, status: .connected)
                 }
+                print("[TunnelManager] calling startForwarding")
                 self.startForwarding()
             case .failed(let error):
                 print("[TunnelManager] server connection FAILED: \(error)")
@@ -85,15 +89,26 @@ final class TunnelManager {
     }
 
     private func startForwarding() {
+        print("[TunnelManager] startForwarding called")
+        print("[TunnelManager]   clientConnection: \(clientConnection != nil ? "valid" : "nil")")
+        print("[TunnelManager]   serverConnection: \(serverConnection != nil ? "valid" : "nil")")
+        print("[TunnelManager]   serverConnection state: \(serverConnection?.state)")
+        print("[TunnelManager]   clientConnection state: \(clientConnection?.state)")
         forwardData(from: clientConnection, to: serverConnection, direction: "client->server")
         forwardData(from: serverConnection, to: clientConnection, direction: "server->client")
     }
 
     private func forwardData(from source: NWConnection?, to destination: NWConnection?, direction: String) {
-        guard let source = source else { return }
+        guard let source = source else {
+            print("[TunnelManager] forwardData called with nil source for \(direction)")
+            return
+        }
 
+        print("[TunnelManager] forwardData called, direction=\(direction), source state=\(source.state)")
         source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
+
+            print("[TunnelManager] forwardData completion for \(direction): data=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
             if let error = error {
                 print("[TunnelManager] forward \(direction) receive error: \(error)")
@@ -118,9 +133,11 @@ final class TunnelManager {
                         destination?.cancel()
                         return
                     }
+                    print("[TunnelManager] forward \(direction) send completed, recursing")
                     self?.forwardData(from: source, to: destination, direction: direction)
                 })
             } else {
+                print("[TunnelManager] forward \(direction) no data, recursing immediately")
                 self.forwardData(from: source, to: destination, direction: direction)
             }
         }
