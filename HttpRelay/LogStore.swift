@@ -7,6 +7,8 @@ import SwiftUI
 final class LogStore {
     private(set) var entries: [LogEntry] = []
     private(set) var activeConnections: Int = 0
+    private(set) var totalTxBytes: Int64 = 0
+    private(set) var totalRxBytes: Int64 = 0
 
     func log(host: String, port: Int, status: LogEntry.LogStatus) {
         let newEntry = LogEntry(timestamp: Date(), host: host, port: port, status: status)
@@ -15,6 +17,14 @@ final class LogStore {
         } else {
             entries = [newEntry] + entries
         }
+    }
+
+    func addTxBytes(_ count: Int) {
+        totalTxBytes += Int64(count)
+    }
+
+    func addRxBytes(_ count: Int) {
+        totalRxBytes += Int64(count)
     }
 
     func incrementConnections() {
@@ -30,5 +40,7 @@ final class LogStore {
     func clear() {
         entries = []
         activeConnections = 0
+        totalTxBytes = 0
+        totalRxBytes = 0
     }
 }

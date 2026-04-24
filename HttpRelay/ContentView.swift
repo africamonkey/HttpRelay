@@ -6,12 +6,15 @@ struct ContentView: View {
     @State private var proxyServer: ProxyServer?
     @State private var connectionCount: Int = 0
     @State private var errorMessage: String?
+    @State private var txBytes: Int64 = 0
+    @State private var rxBytes: Int64 = 0
+    @State private var localIP: String = "—"
 
     var body: some View {
         NavigationStack {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Toggle("Proxy", isOn: Binding(
+                Toggle("Enable Relay", isOn: Binding(
                     get: { isRunning },
                     set: { newValue in
                         if newValue {
@@ -38,22 +41,42 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Status:")
-                        .foregroundColor(.secondary)
-                    Text(isRunning ? "Running" : "Stopped")
-                        .fontWeight(.medium)
-                }
-
-                HStack {
-                    Text("Port:")
-                        .foregroundColor(.secondary)
-                    Text("10808")
-                }
-
-                HStack {
-                    Text("Connections:")
-                        .foregroundColor(.secondary)
-                    Text("\(connectionCount)")
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("Status:")
+                                .foregroundColor(.secondary)
+                            Text(isRunning ? "Running" : "Stopped")
+                                .fontWeight(.medium)
+                        }
+                        HStack {
+                            Text("IP:")
+                                .foregroundColor(.secondary)
+                            Text(localIP)
+                        }
+                        HStack {
+                            Text("Port:")
+                                .foregroundColor(.secondary)
+                            Text("10808")
+                        }
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 4) {
+                        HStack {
+                            Text("TX:")
+                                .foregroundColor(.secondary)
+                            Text(ByteCountFormatter.string(fromByteCount: txBytes, countStyle: .binary))
+                        }
+                        HStack {
+                            Text("RX:")
+                                .foregroundColor(.secondary)
+                            Text(ByteCountFormatter.string(fromByteCount: rxBytes, countStyle: .binary))
+                        }
+                        HStack {
+                            Text("Conn:")
+                                .foregroundColor(.secondary)
+                            Text("\(connectionCount)")
+                        }
+                    }
                 }
             }
             .padding()
@@ -90,6 +113,12 @@ struct ContentView: View {
         }
         .onChange(of: logStore.entries.count) { _, _ in
             connectionCount = logStore.activeConnections
+        }
+        .onChange(of: logStore.totalTxBytes) { _, newValue in
+            txBytes = newValue
+        }
+        .onChange(of: logStore.totalRxBytes) { _, newValue in
+            rxBytes = newValue
         }
         .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
