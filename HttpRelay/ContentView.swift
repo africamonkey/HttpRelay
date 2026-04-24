@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var txBytes: Int64 = 0
     @State private var rxBytes: Int64 = 0
     @State private var localIP: String = "—"
+    @State private var portString: String = "10808"
 
     var body: some View {
         NavigationStack {
@@ -18,7 +19,8 @@ struct ContentView: View {
                     get: { isRunning },
                     set: { newValue in
                         if newValue {
-                            proxyServer = ProxyServer(port: 10808, logStore: logStore)
+                            let port = UInt16(portString) ?? 10808
+                            proxyServer = ProxyServer(port: port, logStore: logStore)
                             proxyServer?.onLocalIPReady = { [self] ip in
                                 localIP = ip
                             }
@@ -59,7 +61,10 @@ struct ContentView: View {
                         HStack {
                             Text("Port:")
                                 .foregroundColor(.secondary)
-                            Text("10808")
+                            TextField("Port", text: $portString)
+                                .keyboardType(.numberPad)
+                                .frame(width: 80)
+                                .disabled(isRunning)
                         }
                     }
                     Spacer()
