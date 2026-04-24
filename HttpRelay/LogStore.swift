@@ -1,40 +1,32 @@
 import Foundation
 import Observation
+import SwiftUI
 
 @Observable
 @MainActor
 final class LogStore {
-    private var _entries: [LogEntry] = []
-    private var _activeConnections: Int = 0
-
-    var entries: [LogEntry] {
-        _entries
-    }
-
-    var activeConnections: Int {
-        _activeConnections
-    }
+    var entries: [LogEntry] = []
+    var activeConnections: Int = 0
 
     func log(host: String, port: Int, status: LogEntry.LogStatus) {
-        let entry = LogEntry(timestamp: Date(), host: host, port: port, status: status)
-        _entries = [entry] + _entries
-        if _entries.count > 500 {
-            _entries = Array(_entries.prefix(500))
+        entries.insert(LogEntry(timestamp: Date(), host: host, port: port, status: status), at: 0)
+        if entries.count > 500 {
+            entries.removeLast()
         }
     }
 
     func incrementConnections() {
-        _activeConnections += 1
+        activeConnections += 1
     }
 
     func decrementConnections() {
-        if _activeConnections > 0 {
-            _activeConnections -= 1
+        if activeConnections > 0 {
+            activeConnections -= 1
         }
     }
 
     func clear() {
-        _entries = []
-        _activeConnections = 0
+        entries = []
+        activeConnections = 0
     }
 }

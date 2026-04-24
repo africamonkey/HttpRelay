@@ -64,13 +64,16 @@ struct ContentView: View {
                 .font(.headline)
                 .padding(.top)
 
-            List {
-                ForEach(logStore.entries) { entry in
-                    Text(entry.displayString)
-                        .font(.system(.caption, design: .monospaced))
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(logStore.entries) { entry in
+                        Text(entry.displayString)
+                            .font(.system(.caption, design: .monospaced))
+                            .lineLimit(1)
+                    }
                 }
             }
-            .listStyle(.plain)
+            .frame(maxHeight: 300)
             .background(Color(.systemGray6))
             .cornerRadius(12)
         }
@@ -84,8 +87,8 @@ struct ContentView: View {
                 .disabled(isRunning)
             }
         }
-        .onChange(of: logStore.activeConnections) { _, newValue in
-            connectionCount = newValue
+        .onChange(of: logStore.entries.count) { _, _ in
+            connectionCount = logStore.activeConnections
         }
         .alert("错误", isPresented: Binding(
             get: { errorMessage != nil },
