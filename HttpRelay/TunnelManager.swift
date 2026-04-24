@@ -116,6 +116,9 @@ case .ready:
 
             if let data = data, !data.isEmpty {
                 print("[TunnelManager] client->server forwarding \(data.count) bytes")
+                Task { @MainActor in
+                    self.logStore.addTxBytes(data.count)
+                }
                 server.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
                         print("[TunnelManager] server send error")
@@ -146,6 +149,9 @@ case .ready:
 
             if let data = data, !data.isEmpty {
                 print("[TunnelManager] server->client forwarding \(data.count) bytes")
+                Task { @MainActor in
+                    self.logStore.addRxBytes(data.count)
+                }
                 client.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
                         print("[TunnelManager] client send error")
@@ -178,6 +184,9 @@ case .ready:
 
             if let data = data, !data.isEmpty {
                 print("[TunnelManager] forwardToServer: forwarding \(data.count) bytes")
+                Task { @MainActor in
+                    self.logStore.addTxBytes(data.count)
+                }
                 server.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
                         print("[TunnelManager] forwardToServer: send error")
@@ -210,6 +219,9 @@ case .ready:
 
             if let data = data, !data.isEmpty {
                 print("[TunnelManager] forwardToClient: forwarding \(data.count) bytes")
+                Task { @MainActor in
+                    self.logStore.addRxBytes(data.count)
+                }
                 client.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
                         print("[TunnelManager] forwardToClient: send error")
@@ -233,6 +245,9 @@ case .ready:
 
     func receiveClientData(_ data: Data) {
         print("[TunnelManager] receiveClientData: received \(data.count) bytes from ProxyServer")
+        Task { @MainActor in
+            self.logStore.addTxBytes(data.count)
+        }
         guard let server = serverConnection else {
             print("[TunnelManager] receiveClientData: no server connection")
             return
