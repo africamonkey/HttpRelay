@@ -94,8 +94,8 @@ final class TunnelManager {
             print("[TunnelManager] startForwarding: missing connections")
             return
         }
-        print("[TunnelManager]   clientConnection: \(client), state: \(client.state)")
-        print("[TunnelManager]   serverConnection: \(server), state: \(server.state)")
+        print("[TunnelManager]   client state: \(client.state)")
+        print("[TunnelManager]   server state: \(server.state)")
 
         print("[TunnelManager] starting client->server forwarding")
         forwardData(from: client, to: server, direction: "client->server")
@@ -105,7 +105,7 @@ final class TunnelManager {
 
     private func forwardData(from source: NWConnection, to destination: NWConnection, direction: String) {
         print("[TunnelManager] forwardData: starting receive for \(direction)")
-        source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, context, isComplete, error in
+        source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
             print("[TunnelManager] forwardData: \(direction) receive callback - data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
