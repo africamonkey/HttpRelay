@@ -55,6 +55,7 @@ struct ContentView: View {
                                 .foregroundColor(.secondary)
                             Text(isRunning ? "Running" : "Stopped")
                                 .fontWeight(.medium)
+                                .foregroundColor(isRunning ? .green : .red)
                         }
                         HStack {
                             Text("IP:")
