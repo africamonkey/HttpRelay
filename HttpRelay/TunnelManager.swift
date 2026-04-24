@@ -94,16 +94,21 @@ final class TunnelManager {
             print("[TunnelManager] startForwarding: missing connections")
             return
         }
-        print("[TunnelManager]   clientConnection: valid, state: \(client.state)")
-        print("[TunnelManager]   serverConnection: valid, state: \(server.state)")
+        print("[TunnelManager]   clientConnection: \(client), state: \(client.state)")
+        print("[TunnelManager]   serverConnection: \(server), state: \(server.state)")
 
+        print("[TunnelManager] starting client->server forwarding")
         forwardData(from: client, to: server, direction: "client->server")
+        print("[TunnelManager] starting server->client forwarding")
         forwardData(from: server, to: client, direction: "server->client")
     }
 
     private func forwardData(from source: NWConnection, to destination: NWConnection, direction: String) {
-        source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        print("[TunnelManager] forwardData: starting receive for \(direction)")
+        source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, context, isComplete, error in
             guard let self = self else { return }
+
+            print("[TunnelManager] forwardData: \(direction) receive callback - data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
             if let error = error {
                 print("[TunnelManager] \(direction) receive error: \(error)")
@@ -120,7 +125,7 @@ final class TunnelManager {
             }
 
             if let data = data, !data.isEmpty {
-                print("[TunnelManager] \(direction) sending \(data.count) bytes")
+                print("[TunnelManager] \(direction) sending \(data.count) bytes to \(destination.endpoint)")
                 destination.send(content: data, completion: .contentProcessed { error in
                     if let error = error {
                         print("[TunnelManager] \(direction) send error: \(error)")
@@ -128,9 +133,11 @@ final class TunnelManager {
                         destination.cancel()
                         return
                     }
+                    print("[TunnelManager] \(direction) send completed, recursing")
                     self.forwardData(from: source, to: destination, direction: direction)
                 })
             } else {
+                print("[TunnelManager] \(direction) no data (empty), recursing")
                 self.forwardData(from: source, to: destination, direction: direction)
             }
         }
