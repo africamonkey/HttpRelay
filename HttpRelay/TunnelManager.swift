@@ -96,7 +96,7 @@ final class TunnelManager {
         print("[TunnelManager] starting bidirectional forwarding")
 
         print("[TunnelManager] setting up client receive handler")
-        client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        client.receive(minimumIncompleteLength: 0, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
             print("[TunnelManager] client->server callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
@@ -158,7 +158,7 @@ final class TunnelManager {
 
     private func forwardToServer(client: NWConnection, server: NWConnection) {
         print("[TunnelManager] forwardToServer: calling receive")
-        client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+        client.receive(minimumIncompleteLength: 0, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
             print("[TunnelManager] forwardToServer callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
