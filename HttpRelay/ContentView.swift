@@ -11,7 +11,7 @@ struct ContentView: View {
         NavigationStack {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Toggle("代理开关", isOn: Binding(
+                Toggle("Proxy", isOn: Binding(
                     get: { isRunning },
                     set: { newValue in
                         if newValue {
@@ -20,7 +20,7 @@ struct ContentView: View {
                                 try proxyServer?.start()
                                 isRunning = true
                             } catch {
-                                errorMessage = "启动代理失败: \(error.localizedDescription)"
+                                errorMessage = "Failed to start proxy: \(error.localizedDescription)"
                                 isRunning = false
                             }
                         } else {
@@ -38,20 +38,20 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("状态:")
+                    Text("Status:")
                         .foregroundColor(.secondary)
-                    Text(isRunning ? "运行中" : "已停止")
+                    Text(isRunning ? "Running" : "Stopped")
                         .fontWeight(.medium)
                 }
 
                 HStack {
-                    Text("端口:")
+                    Text("Port:")
                         .foregroundColor(.secondary)
                     Text("10808")
                 }
 
                 HStack {
-                    Text("连接数:")
+                    Text("Connections:")
                         .foregroundColor(.secondary)
                     Text("\(connectionCount)")
                 }
@@ -60,7 +60,7 @@ struct ContentView: View {
             .background(Color(.systemGray6))
             .cornerRadius(12)
 
-            Text("日志")
+            Text("Logs")
                 .font(.headline)
                 .padding(.top)
 
@@ -82,7 +82,7 @@ struct ContentView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(action: clearLogs) {
-                    Label("清除日志", systemImage: "trash")
+                    Label("Clear Logs", systemImage: "trash")
                 }
                 .disabled(isRunning)
             }
@@ -90,11 +90,11 @@ struct ContentView: View {
         .onChange(of: logStore.entries.count) { _, _ in
             connectionCount = logStore.activeConnections
         }
-        .alert("错误", isPresented: Binding(
+        .alert("Error", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) {
-            Button("确定", role: .cancel) {
+            Button("OK", role: .cancel) {
                 errorMessage = nil
             }
         } message: {
