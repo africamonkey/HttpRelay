@@ -78,6 +78,7 @@ struct ContentView: View {
             .cornerRadius(12)
         }
         .padding()
+        .navigationBarTitleDisplayMode(.inline)
         .navigationTitle("HttpRelay")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
