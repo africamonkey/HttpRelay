@@ -90,54 +90,47 @@ final class TunnelManager {
 
     private func startForwarding() {
         print("[TunnelManager] startForwarding called")
-        print("[TunnelManager]   clientConnection: \(clientConnection != nil ? "valid" : "nil")")
-        print("[TunnelManager]   serverConnection: \(serverConnection != nil ? "valid" : "nil")")
-        print("[TunnelManager]   serverConnection state: \(serverConnection?.state)")
-        print("[TunnelManager]   clientConnection state: \(clientConnection?.state)")
-        forwardData(from: clientConnection, to: serverConnection, direction: "client->server")
-        forwardData(from: serverConnection, to: clientConnection, direction: "server->client")
-    }
-
-    private func forwardData(from source: NWConnection?, to destination: NWConnection?, direction: String) {
-        guard let source = source else {
-            print("[TunnelManager] forwardData called with nil source for \(direction)")
+        guard let client = clientConnection, let server = serverConnection else {
+            print("[TunnelManager] startForwarding: missing connections")
             return
         }
+        print("[TunnelManager]   clientConnection: valid, state: \(client.state)")
+        print("[TunnelManager]   serverConnection: valid, state: \(server.state)")
 
-        print("[TunnelManager] forwardData called, direction=\(direction), source state=\(source.state)")
+        forwardData(from: client, to: server, direction: "client->server")
+        forwardData(from: server, to: client, direction: "server->client")
+    }
+
+    private func forwardData(from source: NWConnection, to destination: NWConnection, direction: String) {
         source.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            print("[TunnelManager] forwardData completion for \(direction): data=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
-
             if let error = error {
-                print("[TunnelManager] forward \(direction) receive error: \(error)")
+                print("[TunnelManager] \(direction) receive error: \(error)")
                 source.cancel()
-                destination?.cancel()
+                destination.cancel()
                 return
             }
 
             if isComplete {
-                print("[TunnelManager] forward \(direction) complete, cancelling")
+                print("[TunnelManager] \(direction) complete")
                 source.cancel()
-                destination?.cancel()
+                destination.cancel()
                 return
             }
 
             if let data = data, !data.isEmpty {
-                print("[TunnelManager] forward \(direction) sending \(data.count) bytes")
-                destination?.send(content: data, completion: .contentProcessed { [weak self] error in
+                print("[TunnelManager] \(direction) sending \(data.count) bytes")
+                destination.send(content: data, completion: .contentProcessed { error in
                     if let error = error {
-                        print("[TunnelManager] forward \(direction) send error: \(error)")
+                        print("[TunnelManager] \(direction) send error: \(error)")
                         source.cancel()
-                        destination?.cancel()
+                        destination.cancel()
                         return
                     }
-                    print("[TunnelManager] forward \(direction) send completed, recursing")
-                    self?.forwardData(from: source, to: destination, direction: direction)
+                    self.forwardData(from: source, to: destination, direction: direction)
                 })
             } else {
-                print("[TunnelManager] forward \(direction) no data, recursing immediately")
                 self.forwardData(from: source, to: destination, direction: direction)
             }
         }
