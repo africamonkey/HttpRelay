@@ -29,8 +29,9 @@ final class ProxyServer {
             guard let self = self else { return }
             switch state {
             case .ready:
-                print("ProxyServer listening on port \(self.port)")
+                print("[ProxyServer] listening on port \(self.port)")
             case .failed(let error):
+                print("[ProxyServer] failed: \(error)")
                 self.delegate?.proxyServer(self, didFailWithError: error)
             default:
                 break
@@ -38,6 +39,7 @@ final class ProxyServer {
         }
 
         listener?.newConnectionHandler = { [weak self] connection in
+            print("[ProxyServer] new connection from \(connection.endpoint)")
             self?.handleNewConnection(connection)
         }
 

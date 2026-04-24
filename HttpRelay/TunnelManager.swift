@@ -32,23 +32,26 @@ final class TunnelManager {
 
             switch state {
             case .ready:
+                print("[TunnelManager] server connection ready to \(self.host):\(self.port)")
                 DispatchQueue.main.async {
                     self.onConnected?()
                     self.logStore.log(host: self.host, port: self.port, status: .connected)
                 }
                 self.startForwarding()
             case .failed(let error):
-                print("Server connection failed: \(error)")
+                print("[TunnelManager] server connection failed: \(error)")
                 self.clientConnection?.cancel()
                 DispatchQueue.main.async {
                     self.onError?()
                 }
             case .cancelled:
+                print("[TunnelManager] server connection cancelled")
                 self.clientConnection?.cancel()
                 DispatchQueue.main.async {
                     self.onClose?()
                 }
             default:
+                print("[TunnelManager] server connection state: \(state)")
                 break
             }
         }
@@ -81,22 +84,24 @@ final class TunnelManager {
             guard let self = self else { return }
 
             if let error = error {
-                print("Forward \(direction) error: \(error)")
+                print("[TunnelManager] forward \(direction) receive error: \(error)")
                 source.cancel()
                 destination?.cancel()
                 return
             }
 
             if isComplete {
+                print("[TunnelManager] forward \(direction) complete, cancelling")
                 source.cancel()
                 destination?.cancel()
                 return
             }
 
             if let data = data, !data.isEmpty {
+                print("[TunnelManager] forward \(direction) sending \(data.count) bytes")
                 destination?.send(content: data, completion: .contentProcessed { [weak self] error in
                     if let error = error {
-                        print("Send \(direction) error: \(error)")
+                        print("[TunnelManager] forward \(direction) send error: \(error)")
                         source.cancel()
                         destination?.cancel()
                         return

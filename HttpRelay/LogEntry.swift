@@ -1,13 +1,13 @@
 import Foundation
 
-struct LogEntry: Identifiable {
+struct LogEntry: Identifiable, Equatable {
     let id = UUID()
     let timestamp: Date
     let host: String
     let port: Int
     let status: LogStatus
 
-    enum LogStatus: String {
+    enum LogStatus: String, Equatable {
         case connect = "CONNECT"
         case connected = "200 OK"
         case closed = "CLOSED"

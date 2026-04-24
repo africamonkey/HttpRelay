@@ -2,6 +2,7 @@ import Foundation
 import Observation
 
 @Observable
+@MainActor
 final class LogStore {
     var entries: [LogEntry] = []
     var activeConnections: Int = 0
