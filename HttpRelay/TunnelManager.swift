@@ -94,8 +94,8 @@ final class TunnelManager {
         print("[TunnelManager]   server state: \(server.state)")
 
         print("[TunnelManager] starting bidirectional forwarding")
-        print("[TunnelManager]   about to call client.receive (waiting for Windows data)")
 
+        print("[TunnelManager] setting up client receive handler")
         client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
@@ -120,11 +120,12 @@ final class TunnelManager {
                     self.forwardToServer(client: client, server: server)
                 })
             } else {
-                print("[TunnelManager] client->server: no data yet, waiting...")
+                print("[TunnelManager] client->server: no data (count=-1 or empty), keeping connection open...")
                 self.forwardToServer(client: client, server: server)
             }
         }
 
+        print("[TunnelManager] setting up server receive handler")
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
@@ -149,7 +150,7 @@ final class TunnelManager {
                     self.forwardToClient(client: client, server: server)
                 })
             } else {
-                print("[TunnelManager] server->client: no data yet, waiting...")
+                print("[TunnelManager] server->client: no data (count=-1 or empty), keeping connection open...")
                 self.forwardToClient(client: client, server: server)
             }
         }
@@ -163,6 +164,7 @@ final class TunnelManager {
             print("[TunnelManager] forwardToServer callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
 
             if error != nil || isComplete {
+                print("[TunnelManager] forwardToServer: error/complete, cancelling")
                 client.cancel()
                 server.cancel()
                 return
@@ -172,6 +174,7 @@ final class TunnelManager {
                 print("[TunnelManager] forwardToServer: forwarding \(data.count) bytes")
                 server.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
+                        print("[TunnelManager] forwardToServer: send error")
                         client.cancel()
                         server.cancel()
                         return
@@ -179,7 +182,7 @@ final class TunnelManager {
                     self.forwardToServer(client: client, server: server)
                 })
             } else {
-                print("[TunnelManager] forwardToServer: no data, continuing...")
+                print("[TunnelManager] forwardToServer: no data, recursing")
                 self.forwardToServer(client: client, server: server)
             }
         }
@@ -193,6 +196,7 @@ final class TunnelManager {
             print("[TunnelManager] forwardToClient callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
 
             if error != nil || isComplete {
+                print("[TunnelManager] forwardToClient: error/complete, cancelling")
                 client.cancel()
                 server.cancel()
                 return
@@ -202,6 +206,7 @@ final class TunnelManager {
                 print("[TunnelManager] forwardToClient: forwarding \(data.count) bytes")
                 client.send(content: data, completion: .contentProcessed { error in
                     if error != nil {
+                        print("[TunnelManager] forwardToClient: send error")
                         client.cancel()
                         server.cancel()
                         return
@@ -209,7 +214,7 @@ final class TunnelManager {
                     self.forwardToClient(client: client, server: server)
                 })
             } else {
-                print("[TunnelManager] forwardToClient: no data, continuing...")
+                print("[TunnelManager] forwardToClient: no data, recursing")
                 self.forwardToClient(client: client, server: server)
             }
         }
