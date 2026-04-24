@@ -14,6 +14,8 @@ final class TunnelManager {
     var onClose: (() -> Void)?
     var onError: (() -> Void)?
 
+    private var pendingOnConnected = false
+
     init(host: String, port: Int, logStore: LogStore) {
         self.host = host
         self.port = port
@@ -35,12 +37,16 @@ final class TunnelManager {
             print("[TunnelManager] server connection state changed to: \(state)")
 
             switch state {
-            case .ready:
+case .ready:
                 print("[TunnelManager] server connection READY to \(self.host):\(self.port)")
+                self.pendingOnConnected = true
                 DispatchQueue.main.async {
+                    print("[TunnelManager] dispatching onConnected callback")
                     self.onConnected?()
+                    print("[TunnelManager] logging connected status")
                     self.logStore.log(host: self.host, port: self.port, status: .connected)
                 }
+                print("[TunnelManager] calling startForwarding")
                 self.startForwarding()
             case .failed(let error):
                 print("[TunnelManager] server connection FAILED: \(error)")
