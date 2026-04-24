@@ -11,6 +11,7 @@ final class ProxyServer {
     private let port: UInt16
     private var listener: NWListener?
     private let logStore: LogStore
+    private var activeTunnels: [String: TunnelManager] = [:]
 
     weak var delegate: ProxyServerDelegate?
 
@@ -128,10 +129,14 @@ final class ProxyServer {
             logStore: logStore
         )
 
+        print("[ProxyServer] tunnelManager created, storing reference")
+        activeTunnels[host + ":\(port)"] = tunnelManager
+
         var hasCompleted = false
         let completionLock = NSLock()
 
         tunnelManager.onConnected = { [weak self] in
+            print("[ProxyServer] onConnected callback fired for \(host):\(port)")
             completionLock.lock()
             guard !hasCompleted else {
                 completionLock.unlock()
@@ -140,9 +145,11 @@ final class ProxyServer {
             hasCompleted = true
             completionLock.unlock()
             self?.sendSuccessResponse(clientConnection)
+            self?.activeTunnels.removeValue(forKey: host + ":\(port)")
         }
 
         tunnelManager.onClose = { [weak self] in
+            print("[ProxyServer] onClose callback fired for \(host):\(port)")
             completionLock.lock()
             guard !hasCompleted else {
                 completionLock.unlock()
@@ -152,9 +159,11 @@ final class ProxyServer {
             completionLock.unlock()
             self?.logStore.log(host: host, port: port, status: .closed)
             self?.logStore.decrementConnections()
+            self?.activeTunnels.removeValue(forKey: host + ":\(port)")
         }
 
         tunnelManager.onError = { [weak self] in
+            print("[ProxyServer] onError callback fired for \(host):\(port)")
             completionLock.lock()
             guard !hasCompleted else {
                 completionLock.unlock()
@@ -165,17 +174,23 @@ final class ProxyServer {
             self?.logStore.log(host: host, port: port, status: .error)
             self?.logStore.decrementConnections()
             clientConnection.cancel()
+            self?.activeTunnels.removeValue(forKey: host + ":\(port)")
         }
 
         tunnelManager.start(clientConnection: clientConnection)
+        print("[ProxyServer] tunnelManager.start() called, waiting for connected callback...")
     }
 
     private func sendSuccessResponse(_ connection: NWConnection) {
+        print("[ProxyServer] sending 200 Connection Established")
         let response = "HTTP/1.1 200 Connection Established\r\n\r\n"
         if let data = response.data(using: .utf8) {
             connection.send(content: data, completion: .contentProcessed { [weak self] error in
                 if let error = error {
+                    print("[ProxyServer] send response error: \(error)")
                     self?.logStore.log(host: String(describing: connection.endpoint), port: 0, status: .error)
+                } else {
+                    print("[ProxyServer] 200 response sent successfully")
                 }
             })
         }
