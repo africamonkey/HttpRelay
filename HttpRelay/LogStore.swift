@@ -5,13 +5,15 @@ import SwiftUI
 @Observable
 @MainActor
 final class LogStore {
-    var entries: [LogEntry] = []
-    var activeConnections: Int = 0
+    private(set) var entries: [LogEntry] = []
+    private(set) var activeConnections: Int = 0
 
     func log(host: String, port: Int, status: LogEntry.LogStatus) {
-        entries.insert(LogEntry(timestamp: Date(), host: host, port: port, status: status), at: 0)
-        if entries.count > 500 {
-            entries.removeLast()
+        let newEntry = LogEntry(timestamp: Date(), host: host, port: port, status: status)
+        if entries.count >= 500 {
+            entries = [newEntry] + entries.dropLast()
+        } else {
+            entries = [newEntry] + entries
         }
     }
 
