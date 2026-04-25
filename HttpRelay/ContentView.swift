@@ -101,7 +101,7 @@ struct ContentView: View {
                             Text(ByteCountFormatter.string(fromByteCount: rxBytes, countStyle: .binary))
                         }
                         HStack {
-                            Text("Up time:")
+                            Text("Uptime:")
                                 .foregroundColor(.secondary)
                             Text(uptimeString)
                         }
