@@ -15,6 +15,8 @@ struct ContentView: View {
     @State private var uptimeString: String = "00:00:00"
     @State private var timer: Timer?
     @State private var showTutorial: Bool = false
+    @State private var showSettings: Bool = false
+    @AppStorage("showTutorial") private var showTutorialOnStart: Bool = true
 
     var body: some View {
         NavigationStack {
@@ -34,7 +36,9 @@ struct ContentView: View {
                                 isRunning = true
                                 startTime = Date()
                                 uptimeString = "00:00:00"
-                                showTutorial = true
+                                if showTutorialOnStart {
+                                    showTutorial = true
+                                }
                                 timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
                                     if let start = startTime {
                                         let elapsed = Int(Date().timeIntervalSince(start))
@@ -143,6 +147,11 @@ struct ContentView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? "Relay")
         .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button(action: { showSettings = true }) {
+                    Image(systemName: "gear")
+                }
+            }
         }
         .onChange(of: logStore.entries.count) { _, _ in
             connectionCount = logStore.activeConnections
@@ -165,6 +174,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showTutorial) {
             TutorialView(localIP: localIP, port: portString)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
         }
         }
     }
