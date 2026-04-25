@@ -33,7 +33,7 @@ struct ContentView: View {
                                 isRunning = true
                                 startTime = Date()
                                 uptimeString = "00:00:00"
-                                timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+                                timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
                                     if let start = startTime {
                                         let elapsed = Int(Date().timeIntervalSince(start))
                                         let hours = elapsed / 3600
