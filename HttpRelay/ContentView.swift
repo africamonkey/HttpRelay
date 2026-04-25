@@ -11,6 +11,9 @@ struct ContentView: View {
     @State private var rxBytes: Int64 = 0
     @State private var localIP: String = "—"
     @State private var portString: String = "10808"
+    @State private var startTime: Date?
+    @State private var uptimeString: String = "00:00:00"
+    @State private var timer: Timer?
 
     var body: some View {
         NavigationStack {
@@ -28,6 +31,17 @@ struct ContentView: View {
                             do {
                                 try proxyServer?.start()
                                 isRunning = true
+                                startTime = Date()
+                                uptimeString = "00:00:00"
+                                timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+                                    if let start = startTime {
+                                        let elapsed = Int(Date().timeIntervalSince(start))
+                                        let hours = elapsed / 3600
+                                        let minutes = (elapsed % 3600) / 60
+                                        let seconds = elapsed % 60
+                                        uptimeString = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+                                    }
+                                }
                                 UIApplication.shared.isIdleTimerDisabled = true
                             } catch {
                                 errorMessage = "Failed to start proxy: \(error.localizedDescription)"
@@ -37,6 +51,9 @@ struct ContentView: View {
                             proxyServer?.stop()
                             proxyServer = nil
                             isRunning = false
+                            startTime = nil
+                            timer?.invalidate()
+                            timer = nil
                             UIApplication.shared.isIdleTimerDisabled = false
                         }
                     }
@@ -84,9 +101,9 @@ struct ContentView: View {
                             Text(ByteCountFormatter.string(fromByteCount: rxBytes, countStyle: .binary))
                         }
                         HStack {
-                            Text("Conn:")
+                            Text("Up time:")
                                 .foregroundColor(.secondary)
-                            Text("\(connectionCount)")
+                            Text(uptimeString)
                         }
                     }
                 }
