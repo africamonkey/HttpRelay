@@ -114,7 +114,7 @@ struct ContentView: View {
         }
         .padding()
         .navigationBarTitleDisplayMode(.inline)
-        .navigationTitle("HttpRelay")
+        .navigationTitle(Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? "Relay")
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(action: clearLogs) {
