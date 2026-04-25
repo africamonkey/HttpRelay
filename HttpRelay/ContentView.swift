@@ -164,7 +164,7 @@ struct ContentView: View {
             Text(errorMessage ?? "")
         }
         .sheet(isPresented: $showTutorial) {
-            TutorialView()
+            TutorialView(localIP: localIP, port: portString)
         }
         }
     }

@@ -3,6 +3,8 @@ import SwiftUI
 struct TutorialView: View {
     @State private var selectedTab: Int = 0
     @Environment(\.dismiss) private var dismiss
+    let localIP: String
+    let port: String
 
     var body: some View {
         NavigationStack {
@@ -15,9 +17,9 @@ struct TutorialView: View {
                 .padding()
 
                 TabView(selection: $selectedTab) {
-                    MacTutorialView()
+                    MacTutorialView(localIP: localIP, port: port)
                         .tag(0)
-                    WindowsTutorialView()
+                    WindowsTutorialView(localIP: localIP, port: port)
                         .tag(1)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
@@ -36,6 +38,9 @@ struct TutorialView: View {
 }
 
 struct MacTutorialView: View {
+    let localIP: String
+    let port: String
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -43,17 +48,26 @@ struct MacTutorialView: View {
                     .font(.title2)
                     .fontWeight(.bold)
 
-                StepRow(number: 1, title: "Open System Settings", description: "Click the Apple menu → System Settings")
+                StepRow(number: 1, title: "Open System Settings", description: "Click the Apple menu → System Settings. ")
+                TutorialImage(name: "tutorial_mac_1")
+                    .frame(maxWidth: .infinity)
 
-                StepRow(number: 2, title: "Navigate to Wi-Fi", description: "Select Wi-Fi in the sidebar")
+                StepRow(number: 2, title: "Navigate to Network", description: "Select Network in the sidebar, and select your network interface (Ethernet or Wi-Fi). ")
+                TutorialImage(name: "tutorial_mac_2")
+                    .frame(maxWidth: .infinity)
 
-                StepRow(number: 3, title: "Open Network Details", description: "Click the info icon (ℹ) next to your connected Wi-Fi network")
+                StepRow(number: 3, title: "Open Network Details", description: "Click the \"Detail\" button next to your connected Wi-Fi network")
+                TutorialImage(name: "tutorial_mac_3")
+                    .frame(maxWidth: .infinity)
 
-                StepRow(number: 4, title: "Configure Proxy", description: "Scroll down to \"HTTP Proxy\" section:\n• Select \"Manual\"\n• Enter server IP address above\n• Enter port 10808 (or your configured port)")
+                StepRow(number: 4, title: "Configure Proxy", description: "Select \"Proxies\" in the side bar, scroll down to \"HTTP Proxy\" and \"HTTPS proxy\" section:\n• Enter your iOS device IP address \(localIP)\n• Enter port \(port)")
+                
+                ProxyInfoBox(ip: localIP, port: port)
+                
+                TutorialImage(name: "tutorial_mac_4")
+                    .frame(maxWidth: .infinity)
 
-                StepRow(number: 5, title: "Save", description: "Click \"Done\" to apply the settings")
-
-                ImagePlaceholder(title: "Mac Network Settings Screenshot")
+                StepRow(number: 5, title: "Save", description: "Click \"OK\" to apply the settings")
 
                 Text("Note: Make sure your Mac is connected to the same network as your iOS device.")
                     .font(.caption)
@@ -65,6 +79,9 @@ struct MacTutorialView: View {
 }
 
 struct WindowsTutorialView: View {
+    let localIP: String
+    let port: String
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -76,11 +93,11 @@ struct WindowsTutorialView: View {
 
                 StepRow(number: 2, title: "Navigate to Proxy", description: "Go to Network & Internet → Proxy")
 
-                StepRow(number: 3, title: "Configure Manual Proxy", description: "Under \"Manual proxy setup\":\n• Toggle \"ON\"\n• Enter the server IP address shown above\n• Enter port 10808 (or your configured port)")
+                StepRow(number: 3, title: "Configure Manual Proxy", description: "Under \"Manual proxy setup\":\n• Toggle \"ON\"\n• Enter the server IP address shown above\n• Enter port \(port)")
 
                 StepRow(number: 4, title: "Save", description: "Settings are applied automatically")
 
-                ImagePlaceholder(title: "Windows Proxy Settings Screenshot")
+                ProxyInfoBox(ip: localIP, port: port)
 
                 Text("Note: For system-wide proxy, enable \"Proxy\" in Windows Settings. For browser-only proxy, use browser settings instead.")
                     .font(.caption)
@@ -115,25 +132,51 @@ struct StepRow: View {
     }
 }
 
-struct ImagePlaceholder: View {
-    let title: String
+struct TutorialImage: View {
+    let name: String
 
     var body: some View {
-        VStack {
-            Image(systemName: "photo")
-                .font(.largeTitle)
-                .foregroundColor(.gray)
-            Text(title)
-                .font(.caption)
-                .foregroundColor(.gray)
+        Image(name)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .cornerRadius(8)
+    }
+}
+
+struct ProxyInfoBox: View {
+    let ip: String
+    let port: String
+
+    var body: some View {
+        HStack(spacing: 20) {
+            VStack(spacing: 4) {
+                Text("Server IP")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(ip)
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.primary)
+            }
+            Divider()
+                .frame(height: 40)
+            VStack(spacing: 4) {
+                Text("Port")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(port)
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .foregroundColor(.primary)
+            }
         }
+        .padding()
         .frame(maxWidth: .infinity)
-        .frame(height: 200)
         .background(Color(.systemGray6))
         .cornerRadius(12)
     }
 }
 
 #Preview {
-    TutorialView()
+    TutorialView(localIP: "192.168.1.100", port: "10808")
 }
