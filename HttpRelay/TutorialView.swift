@@ -69,7 +69,7 @@ struct MacTutorialView: View {
 
                 StepRow(number: 5, title: "Save", description: "Click \"OK\" to apply the settings")
 
-                Text("Note: Make sure your Mac is connected to the same network as your iOS device.")
+                Text("Make sure your Mac is connected to the same network as your iOS device.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -89,17 +89,29 @@ struct WindowsTutorialView: View {
                     .font(.title2)
                     .fontWeight(.bold)
 
-                StepRow(number: 1, title: "Open Settings", description: "Press Win + I to open Settings")
+                StepRow(number: 1, title: "Open Settings", description: "Right-click Start Menu to open Settings")
+                TutorialImage(name: "tutorial_windows_1")
+                    .frame(maxWidth: .infinity)
 
                 StepRow(number: 2, title: "Navigate to Proxy", description: "Go to Network & Internet → Proxy")
+                TutorialImage(name: "tutorial_windows_2")
+                    .frame(maxWidth: .infinity)
 
-                StepRow(number: 3, title: "Configure Manual Proxy", description: "Under \"Manual proxy setup\":\n• Toggle \"ON\"\n• Enter the server IP address shown above\n• Enter port \(port)")
+                StepRow(number: 3, title: "Configure Manual Proxy", description: "Under \"Manual proxy setup\":\n• Toggle \"Set up\"")
+                TutorialImage(name: "tutorial_windows_3")
+                    .frame(maxWidth: .infinity)
 
-                StepRow(number: 4, title: "Save", description: "Settings are applied automatically")
-
+                StepRow(number: 4, title: "Configure Manual Proxy", description: "Under \"Edit proxy server\":\n• Toggle \"ON\"\n• Enter your iOS device IP address \(localIP)\n• Enter port \(port).")
                 ProxyInfoBox(ip: localIP, port: port)
+                TutorialImage(name: "tutorial_windows_4")
+                    .frame(maxWidth: .infinity)
 
-                Text("Note: For system-wide proxy, enable \"Proxy\" in Windows Settings. For browser-only proxy, use browser settings instead.")
+                StepRow(number: 5, title: "Save", description: "Click \"Save\" to apply the settings")
+                
+                Text("Make sure your PC is connected to the same network as your iOS device.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text("For system-wide proxy, enable \"Proxy\" in Windows Settings. For browser-only proxy, use browser settings instead.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
