@@ -14,6 +14,7 @@ struct ContentView: View {
     @State private var startTime: Date?
     @State private var uptimeString: String = "00:00:00"
     @State private var timer: Timer?
+    @State private var showTutorial: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -33,6 +34,7 @@ struct ContentView: View {
                                 isRunning = true
                                 startTime = Date()
                                 uptimeString = "00:00:00"
+                                showTutorial = true
                                 timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
                                     if let start = startTime {
                                         let elapsed = Int(Date().timeIntervalSince(start))
@@ -160,6 +162,9 @@ struct ContentView: View {
             }
         } message: {
             Text(errorMessage ?? "")
+        }
+        .sheet(isPresented: $showTutorial) {
+            TutorialView()
         }
         }
     }
