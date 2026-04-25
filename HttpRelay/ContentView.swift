@@ -95,9 +95,17 @@ struct ContentView: View {
             .background(Color(.systemGray6))
             .cornerRadius(12)
 
-            Text("Logs")
-                .font(.headline)
-                .padding(.top)
+            HStack {
+                Text("Logs")
+                    .font(.headline)
+                Spacer()
+                Button(action: clearLogs) {
+                    Image(systemName: "trash")
+                        .foregroundColor(.red)
+                }
+                .disabled(isRunning)
+            }
+            .padding(.top)
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -116,12 +124,6 @@ struct ContentView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationTitle(Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? "Relay")
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button(action: clearLogs) {
-                    Label("Clear Logs", systemImage: "trash")
-                }
-                .disabled(isRunning)
-            }
         }
         .onChange(of: logStore.entries.count) { _, _ in
             connectionCount = logStore.activeConnections
