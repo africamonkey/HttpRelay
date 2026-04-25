@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TutorialView: View {
     @State private var selectedTab: Int = 0
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
@@ -26,6 +27,7 @@ struct TutorialView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Done") {
+                        dismiss()
                     }
                 }
             }
