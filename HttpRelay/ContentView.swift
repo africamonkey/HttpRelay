@@ -16,7 +16,7 @@ struct ContentView: View {
         NavigationStack {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Toggle("Enable Relay", isOn: Binding(
+                Toggle("Enable Proxy Server", isOn: Binding(
                     get: { isRunning },
                     set: { newValue in
                         if newValue {
