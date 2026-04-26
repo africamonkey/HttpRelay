@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy - HttpRelay</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.8;
+            color: #333;
+            background: #f5f5f7;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            color: #1d1d1f;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 1.1rem;
+        }
+
+        .card {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 20px rgba(0,0,0,0.05);
+        }
+
+        h2 {
+            color: #667eea;
+            font-size: 1.4rem;
+            margin: 30px 0 15px 0;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+
+        h2:first-of-type {
+            margin-top: 0;
+        }
+
+        p {
+            margin-bottom: 15px;
+            color: #444;
+        }
+
+        ul {
+            margin: 15px 0;
+            padding-left: 25px;
+        }
+
+        li {
+            margin-bottom: 10px;
+            color: #444;
+        }
+
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        footer {
+            text-align: center;
+            color: #888;
+            padding: 20px;
+            font-size: 0.9rem;
+        }
+
+        footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+
+        footer a:hover {
+            text-decoration: underline;
+        }
+
+        @media (max-width: 600px) {
+            h1 {
+                font-size: 1.8rem;
+            }
+
+            .card {
+                padding: 25px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <a href="index.html" class="back-link">← Back to App</a>
+            <h1>Privacy Policy</h1>
+            <p class="subtitle">Last updated: April 2024</p>
+        </header>
+
+        <div class="card">
+            <h2>Information We Collect</h2>
+            <p>HttpRelay is designed with your privacy in mind. The app does not collect, store, or transmit any personal information to external servers.</p>
+            <p>The following information is processed locally on your device:</p>
+            <ul>
+                <li><strong>Network Configuration:</strong> Server IP address and port number used for proxy functionality</li>
+                <li><strong>Connection Logs:</strong> Temporary connection metadata (host, port, timestamp, status) stored locally for display purposes only</li>
+                <li><strong>Usage Statistics:</strong> TX/RX byte counts maintained in memory during proxy sessions</li>
+            </ul>
+
+            <h2>Data Storage</h2>
+            <p>All data processed by HttpRelay remains on your device:</p>
+            <ul>
+                <li>Connection logs are stored temporarily and cleared when the app closes or when you clear the logs</li>
+                <li>Settings (such as your preference to show the tutorial on startup) are stored locally using iOS UserDefaults</li>
+                <li>No data is synced to iCloud or any other cloud service</li>
+            </ul>
+
+            <h2>Network Traffic</h2>
+            <p>HttpRelay acts as a local proxy server on your iOS device:</p>
+            <ul>
+                <li>The app does not intercept, inspect, or store the content of your network traffic</li>
+                <li>All HTTP/HTTPS data is forwarded transparently between your computer and the target server</li>
+                <li>The app does not add, modify, or filter any data passing through the proxy</li>
+            </ul>
+
+            <h2>Third-Party Services</h2>
+            <p>HttpRelay does not use any third-party analytics services, advertising services, or data collection tools. The app has no network connections except:</p>
+            <ul>
+                <li>Establishing the proxy server locally on your device</li>
+                <li>Connecting to target servers on behalf of your computer</li>
+            </ul>
+
+            <h2>Permissions</h2>
+            <p>HttpRelay requires the following iOS permissions:</p>
+            <ul>
+                <li><strong>Local Network Access:</strong> Required to run the proxy server and establish connections to target servers</li>
+                <li><strong>No other permissions are required</strong></li>
+            </ul>
+
+            <h2>Children's Privacy</h2>
+            <p>This app is not intended for children under the age of 13. We do not collect any information from children.</p>
+
+            <h2>Changes to This Policy</h2>
+            <p>If we make changes to this privacy policy, we will update the "Last updated" date at the top of this page. Any significant changes will be noted in the app's release notes.</p>
+
+            <h2>Contact</h2>
+            <p>Email: gzez2012@163.com</p>
+            <p>Github: <a href="https://github.com/africamonkey/HttpRelay">Link</a></p>
+        </div>
+
+        <footer>
+            <p>&copy; 2026 HttpRelay. All rights reserved.</p>
+            <p><a href="index.html">Home</a> | <a href="privacy.html">Privacy Policy</a></p>
+        </footer>
+    </div>
+</body>
+</html>
