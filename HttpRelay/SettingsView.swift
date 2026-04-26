@@ -14,6 +14,9 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Link(destination: URL(string: "https://github.com/africamonkey/HttpRelay")!) {
+                        Text("Github Repository")
+                    }
                     NavigationLink(destination: AboutView()) {
                         Text("About")
                     }
