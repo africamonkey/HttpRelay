@@ -12,6 +12,12 @@ struct SettingsView: View {
                 } footer: {
                     Text("When enabled, the setup guide will appear each time you start the proxy server.")
                 }
+
+                Section {
+                    NavigationLink(destination: AboutView()) {
+                        Text("About")
+                    }
+                }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
@@ -27,5 +33,7 @@ struct SettingsView: View {
 }
 
 #Preview {
-    SettingsView()
+    NavigationStack {
+        SettingsView()
+    }
 }
