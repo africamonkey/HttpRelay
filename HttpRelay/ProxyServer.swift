@@ -88,7 +88,7 @@ final class ProxyServer {
             print("[ProxyServer] receiveHTTPRequest callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
             if let error = error {
-                self.logStore.log(host: String(describing: connection.endpoint), port: 0, status: .error)
+                print("[ProxyServer] receiveHTTPRequest: error, cancelling")
                 connection.cancel()
                 return
             }
@@ -117,7 +117,7 @@ final class ProxyServer {
         }
     }
 
-private func findTunnelKey(for connection: NWConnection) -> String? {
+    private func findTunnelKey(for connection: NWConnection) -> String? {
         tunnelsLock.lock()
         defer { tunnelsLock.unlock() }
         let searchKey = activeTunnels.keys.first { key in
@@ -155,47 +155,188 @@ private func findTunnelKey(for connection: NWConnection) -> String? {
             return
         }
 
-        let method = String(components[0])
+        let methodStr = String(components[0])
         let target = String(components[1])
-        print("[ProxyServer] processRequest: method=\(method), target=\(target)")
+        print("[ProxyServer] processRequest: method=\(methodStr), target=\(target)")
 
-        guard method == "CONNECT" else {
-            print("[ProxyServer] processRequest: not CONNECT, sending 405")
-            sendErrorResponse(connection, code: "405 Method Not Allowed")
-            return
-        }
+        let method = LogEntry.HTTPMethod(rawValue: methodStr) ?? .unknown
 
-        let hostPort = target.split(separator: ":")
-        guard hostPort.count == 2,
-              let port = Int(hostPort[1]) else {
-            print("[ProxyServer] processRequest: invalid target, sending 400")
-            sendErrorResponse(connection, code: "400 Bad Request")
-            return
-        }
+        if method == .connect {
+            let hostPort = target.split(separator: ":")
+            guard hostPort.count == 2,
+                  let port = Int(hostPort[1]) else {
+                print("[ProxyServer] processRequest: invalid target, sending 400")
+                sendErrorResponse(connection, code: "400 Bad Request")
+                return
+            }
 
-        let host = String(hostPort[0])
-        print("[ProxyServer] processRequest: connecting to \(host):\(port)")
-        logStore.log(host: host, port: port, status: .connect)
-        logStore.incrementConnections()
+            let host = String(hostPort[0])
+            let (path, query) = parsePathAndQuery(from: request)
+            let requestHeaders = parseHeaders(from: request)
 
-        do {
-            try establishTunnel(host: host, port: port, clientConnection: connection)
-        } catch {
-            print("[ProxyServer] processRequest: establishTunnel failed: \(error)")
-            logStore.log(host: host, port: port, status: .error)
-            logStore.decrementConnections()
-            sendErrorResponse(connection, code: "502 Bad Gateway")
+            print("[ProxyServer] processRequest: CONNECT to \(host):\(port), path=\(path)")
+            let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
+            logStore.incrementConnections()
+
+            do {
+                try establishTunnel(host: host, port: port, clientConnection: connection, logEntry: logEntry)
+            } catch {
+                print("[ProxyServer] processRequest: establishTunnel failed: \(error)")
+                logStore.failEntry(logEntry)
+                logStore.decrementConnections()
+                sendErrorResponse(connection, code: "502 Bad Gateway")
+            }
+        } else {
+            print("[ProxyServer] processRequest: handling as HTTP proxy request")
+            handleHTTPPxoyRequest(method: method, methodStr: methodStr, target: target, request: request, connection: connection)
         }
 
         print("[ProxyServer] processRequest: continuing to wait for more data on connection")
         self.receiveHTTPRequest(connection)
     }
 
-    private func establishTunnel(host: String, port: Int, clientConnection: NWConnection) throws {
+    private func handleHTTPPxoyRequest(method: LogEntry.HTTPMethod, methodStr: String, target: String, request: String, connection: NWConnection) {
+        guard let url = URL(string: target) else {
+            print("[ProxyServer] handleHTTPPxoyRequest: invalid URL: \(target)")
+            sendErrorResponse(connection, code: "400 Bad Request")
+            return
+        }
+
+        guard let host = url.host, let port = url.port else {
+            print("[ProxyServer] handleHTTPPxoyRequest: missing host/port in URL: \(target)")
+            sendErrorResponse(connection, code: "400 Bad Request")
+            return
+        }
+
+        let path = url.path.isEmpty ? "/" : url.path
+        let query = url.query
+        let requestHeaders = parseHeaders(from: request)
+
+        print("[ProxyServer] handleHTTPPxoyRequest: \(methodStr) \(host):\(port)\(path)")
+        let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
+        logStore.incrementConnections()
+
         let tunnelManager = TunnelManager(
             host: host,
             port: port,
-            logStore: logStore
+            logStore: logStore,
+            logEntry: logEntry
+        )
+
+        let key = "\(host):\(port):\(ObjectIdentifier(connection as AnyObject))"
+        tunnelsLock.lock()
+        activeTunnels[key] = tunnelManager
+        tunnelsLock.unlock()
+
+        tunnelManager.onConnected = { [weak self] in
+            print("[ProxyServer] handleHTTPPxoyRequest: connected to \(host):\(port), sending request")
+            self?.sendHTTPProxyRequest(tunnelManager: tunnelManager, methodStr: methodStr, path: path, query: query, request: request, connection: connection)
+        }
+
+        tunnelManager.onClose = { [weak self] in
+            print("[ProxyServer] handleHTTPPxoyRequest: connection closed")
+            if let self = self {
+                self.logStore.completeEntry(logEntry)
+                self.logStore.decrementConnections()
+                self.tunnelsLock.lock()
+                self.activeTunnels.removeValue(forKey: key)
+                self.tunnelsLock.unlock()
+            }
+        }
+
+        tunnelManager.onError = { [weak self] in
+            print("[ProxyServer] handleHTTPPxoyRequest: connection error")
+            if let self = self {
+                self.logStore.failEntry(logEntry)
+                self.logStore.decrementConnections()
+                self.tunnelsLock.lock()
+                self.activeTunnels.removeValue(forKey: key)
+                self.tunnelsLock.unlock()
+            }
+        }
+
+        tunnelManager.startAsProxy(clientConnection: connection)
+    }
+
+    private func sendHTTPProxyRequest(tunnelManager: TunnelManager, methodStr: String, path: String, query: String?, request: String, connection: NWConnection) {
+        let fullPath: String
+        if let query = query, !query.isEmpty {
+            fullPath = "\(path)?\(query)"
+        } else {
+            fullPath = path
+        }
+
+        let lines = request.split(separator: "\r\n")
+        var headers = parseHeaders(from: request)
+        headers["Host"] = headers["Host"] ?? tunnelManager.host
+
+        let firstLine = "\(methodStr) \(fullPath) HTTP/1.1"
+        var httpRequest = firstLine + "\r\n"
+        for (key, value) in headers {
+            httpRequest += "\(key): \(value)\r\n"
+        }
+
+        if let bodyRange = request.range(of: "\r\n\r\n") {
+            let body = request[bodyRange.upperBound...]
+            httpRequest += "\r\n"
+            httpRequest += String(body)
+        } else {
+            httpRequest += "\r\n"
+        }
+
+        if let data = httpRequest.data(using: .utf8) {
+            tunnelManager.sendToServer(data: data)
+        }
+
+        logStore.updateEntry(tunnelManager.logEntry, responseStatusCode: 0, responseHeaders: nil, duration: 0)
+    }
+
+    private func parsePathAndQuery(from request: String) -> (path: String, query: String?) {
+        let lines = request.split(separator: "\r\n")
+        guard let firstLine = lines.first else {
+            return ("/", nil)
+        }
+
+        let components = firstLine.split(separator: " ")
+        guard components.count >= 2 else {
+            return ("/", nil)
+        }
+
+        let target = String(components[1])
+
+        if target.contains("?") {
+            let parts = target.split(separator: "?", maxSplits: 1)
+            let pathPart = String(parts[0])
+            let queryPart = parts.count > 1 ? String(parts[1]) : nil
+            return (pathPart, queryPart)
+        }
+
+        return (target, nil)
+    }
+
+    private func parseHeaders(from request: String) -> [String: String] {
+        var headers: [String: String] = [:]
+        let lines = request.split(separator: "\r\n")
+
+        for i in 1..<lines.count {
+            let line = lines[i]
+            if line.isEmpty { break }
+            if let colonIndex = line.firstIndex(of: ":") {
+                let key = String(line[..<colonIndex]).trimmingCharacters(in: .whitespaces)
+                let value = String(line[line.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
+                headers[key] = value
+            }
+        }
+
+        return headers
+    }
+
+    private func establishTunnel(host: String, port: Int, clientConnection: NWConnection, logEntry: LogEntry) throws {
+        let tunnelManager = TunnelManager(
+            host: host,
+            port: port,
+            logStore: logStore,
+            logEntry: logEntry
         )
 
         let key = "\(host):\(port):\(ObjectIdentifier(clientConnection as AnyObject))"
@@ -235,9 +376,9 @@ private func findTunnelKey(for connection: NWConnection) -> String? {
             }
             hasCompleted = true
             completionLock.unlock()
-            self?.logStore.log(host: host, port: port, status: .closed)
-            self?.logStore.decrementConnections()
             if let self = self {
+                self.logStore.completeEntry(logEntry)
+                self.logStore.decrementConnections()
                 self.tunnelsLock.lock()
                 self.activeTunnels.removeValue(forKey: host + ":\(port)")
                 self.tunnelsLock.unlock()
@@ -253,10 +394,10 @@ private func findTunnelKey(for connection: NWConnection) -> String? {
             }
             hasCompleted = true
             completionLock.unlock()
-            self?.logStore.log(host: host, port: port, status: .error)
-            self?.logStore.decrementConnections()
-            clientConnection.cancel()
             if let self = self {
+                self.logStore.failEntry(logEntry)
+                self.logStore.decrementConnections()
+                clientConnection.cancel()
                 self.tunnelsLock.lock()
                 self.activeTunnels.removeValue(forKey: host + ":\(port)")
                 self.tunnelsLock.unlock()
@@ -274,7 +415,6 @@ private func findTunnelKey(for connection: NWConnection) -> String? {
             connection.send(content: data, completion: .contentProcessed { [weak self] error in
                 if let error = error {
                     print("[ProxyServer] send response error: \(error)")
-                    self?.logStore.log(host: String(describing: connection.endpoint), port: 0, status: .error)
                 } else {
                     print("[ProxyServer] 200 response sent successfully")
                 }
