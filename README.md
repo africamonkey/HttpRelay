@@ -1,15 +1,23 @@
-# HttpRelay
+# HTTP Debugger
 
-HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a Windows/Mac machine to route HTTP/HTTPS traffic through the iOS device, which is useful when the iOS device has access to a network (such as an enterprise VPN) that the computer cannot directly access.
+HTTP Debugger is an iOS app that acts as an HTTP CONNECT proxy server for developers and QA engineers. It allows you to debug HTTP/HTTPS traffic from your computer by routing it through your iOS device, which is useful for inspecting network requests and responses during development.
 
 ## Features
 
 - **HTTP CONNECT Proxy Server** - Runs on a configurable port (default: 10808)
-- **Real-time Statistics** - TX/RX byte counting and connection tracking
+- **Real-time Traffic Inspection** - Monitor TX/RX byte counts and connection status
+- **Connection Logging** - View detailed logs of all HTTP connections
 - **Local IP Display** - Shows the iOS device's WiFi IP address
-- **Keep Awake** - Device stays awake while proxy is running
+- **Keep Awake** - Device stays awake while debugging
 - **Setup Guides** - Built-in tutorial for Mac and Windows proxy configuration
 - **Settings** - Configurable tutorial auto-show on startup
+
+## Use Cases
+
+- **Debug your app's HTTP traffic** during iOS development
+- **Inspect HTTP headers and payloads** from your computer's applications
+- **Test proxy configuration** for your development environment
+- **Monitor network requests** from development tools and CLIs
 
 ## Requirements
 
@@ -24,9 +32,9 @@ xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay -configuration Debug -
 
 ## Usage
 
-### Starting the Proxy
+### Starting the Debugger
 
-1. Open HttpRelay on your iOS device
+1. Open HTTP Debugger on your iOS device
 2. Toggle "Enable Proxy Server" to start
 3. Grant network permissions if prompted
 4. The server IP and port will be displayed
@@ -51,12 +59,11 @@ xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay -configuration Debug -
 4. Enter the server IP address and port (default: 10808)
 5. Settings are applied automatically
 
-### Viewing Statistics
+### Viewing Traffic
 
 - **TX** - Total bytes sent to server
 - **RX** - Total bytes received from server
-- **Uptime** - Time since proxy started
-- **Logs** - Real-time connection status
+- **Logs** - Real-time connection status with timestamps
 
 ## Architecture
 

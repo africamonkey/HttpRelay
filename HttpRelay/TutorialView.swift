@@ -44,7 +44,7 @@ struct MacTutorialView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Mac HTTP Proxy Setup")
+                Text("Mac HTTP Debugger Setup")
                     .font(.title2)
                     .fontWeight(.bold)
 
@@ -85,7 +85,7 @@ struct WindowsTutorialView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Windows HTTP Proxy Setup")
+                Text("Windows HTTP Debugger Setup")
                     .font(.title2)
                     .fontWeight(.bold)
 

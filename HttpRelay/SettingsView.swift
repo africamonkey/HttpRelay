@@ -10,7 +10,7 @@ struct SettingsView: View {
                 Section {
                     Toggle("Show Tutorial on Startup", isOn: $showTutorial)
                 } footer: {
-                    Text("When enabled, the setup guide will appear each time you start the proxy server.")
+                    Text("When enabled, the setup guide will appear each time you start the debugger server.")
                 }
 
                 Section {

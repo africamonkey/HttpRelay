@@ -22,7 +22,7 @@ struct ContentView: View {
         NavigationStack {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Toggle("Enable Proxy Server", isOn: Binding(
+                Toggle("Enable Debugger Server", isOn: Binding(
                     get: { isRunning },
                     set: { newValue in
                         if newValue {
@@ -50,7 +50,7 @@ struct ContentView: View {
                                 }
                                 UIApplication.shared.isIdleTimerDisabled = true
                             } catch {
-                                errorMessage = "Failed to start proxy: \(error.localizedDescription)"
+                                errorMessage = "Failed to start debugger: \(error.localizedDescription)"
                                 isRunning = false
                             }
                         } else {
