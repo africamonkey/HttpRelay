@@ -2,6 +2,12 @@
 
 HTTP Debugger is an iOS app that acts as an HTTP CONNECT proxy server for developers and QA engineers. It allows you to debug HTTP/HTTPS traffic from your computer by routing it through your iOS device, which is useful for inspecting network requests and responses during development.
 
+
+
+https://github.com/user-attachments/assets/ae666d69-091e-4932-a4f4-ee6e5380aa9c
+
+
+
 ## Features
 
 - **HTTP CONNECT Proxy Server** - Runs on a configurable port (default: 10808)
