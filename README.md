@@ -24,6 +24,7 @@ https://github.com/user-attachments/assets/ae666d69-091e-4932-a4f4-ee6e5380aa9c
 - **Inspect HTTP headers and payloads** from your computer's applications
 - **Test proxy configuration** for your development environment
 - **Monitor network requests** from development tools and CLIs
+- **Access enterprise internal network** - Route HTTP/HTTPS traffic through your iOS device which is connected to corporate VPN, enabling your computer to reach internal resources that would otherwise be inaccessible
 
 ## Requirements
 
