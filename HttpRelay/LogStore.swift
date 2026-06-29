@@ -75,9 +75,21 @@ final class LogStore {
     }
 
     func completeEntry(_ entry: LogEntry) {
+        if let index = entries.firstIndex(where: { $0.id == entry.id }) {
+            entries[index].status = .completed
+            if entries[index].duration == nil {
+                entries[index].duration = Date().timeIntervalSince(entries[index].timestamp)
+            }
+        }
     }
 
     func failEntry(_ entry: LogEntry) {
+        if let index = entries.firstIndex(where: { $0.id == entry.id }) {
+            entries[index].status = .failed
+            if entries[index].duration == nil {
+                entries[index].duration = Date().timeIntervalSince(entries[index].timestamp)
+            }
+        }
     }
 
     func addTxBytes(_ count: Int, to entry: LogEntry? = nil) {

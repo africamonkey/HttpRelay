@@ -14,6 +14,7 @@ struct LogEntry: Identifiable, Equatable {
     var txBytes: Int64
     var rxBytes: Int64
     var duration: TimeInterval?
+    var status: EntryStatus = .inProgress
 
     enum HTTPMethod: String, Equatable, CaseIterable {
         case get = "GET"
@@ -25,6 +26,12 @@ struct LogEntry: Identifiable, Equatable {
         case options = "OPTIONS"
         case connect = "CONNECT"
         case unknown = "UNKNOWN"
+    }
+
+    enum EntryStatus: String, Equatable {
+        case inProgress
+        case completed
+        case failed
     }
 
     var formattedTime: String {
@@ -68,6 +75,7 @@ struct LogEntry: Identifiable, Equatable {
     }
 
     var isFailed: Bool {
+        if status == .failed { return true }
         guard let code = responseStatusCode else { return false }
         return code >= 400
     }

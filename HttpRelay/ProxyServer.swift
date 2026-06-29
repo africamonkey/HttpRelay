@@ -359,11 +359,6 @@ final class ProxyServer {
             completionLock.unlock()
             print("[ProxyServer] calling sendSuccessResponse for \(host):\(port)")
             self?.sendSuccessResponse(clientConnection)
-            if let self = self {
-                self.tunnelsLock.lock()
-                self.activeTunnels.removeValue(forKey: host + ":\(port)")
-                self.tunnelsLock.unlock()
-            }
             print("[ProxyServer] done with onConnected for \(host):\(port)")
         }
 
@@ -380,7 +375,7 @@ final class ProxyServer {
                 self.logStore.completeEntry(logEntry)
                 self.logStore.decrementConnections()
                 self.tunnelsLock.lock()
-                self.activeTunnels.removeValue(forKey: host + ":\(port)")
+                self.activeTunnels.removeValue(forKey: key)
                 self.tunnelsLock.unlock()
             }
         }
@@ -399,7 +394,7 @@ final class ProxyServer {
                 self.logStore.decrementConnections()
                 clientConnection.cancel()
                 self.tunnelsLock.lock()
-                self.activeTunnels.removeValue(forKey: host + ":\(port)")
+                self.activeTunnels.removeValue(forKey: key)
                 self.tunnelsLock.unlock()
             }
         }
