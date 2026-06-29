@@ -344,33 +344,14 @@ final class ProxyServer {
         activeTunnels[key] = tunnelManager
         tunnelsLock.unlock()
 
-        var hasCompleted = false
-        let completionLock = NSLock()
-
         tunnelManager.onConnected = { [weak self] in
             print("[ProxyServer] onConnected callback fired for \(host):\(port)")
-            completionLock.lock()
-            guard !hasCompleted else {
-                completionLock.unlock()
-                print("[ProxyServer] onConnected but hasCompleted=true, ignoring")
-                return
-            }
-            hasCompleted = true
-            completionLock.unlock()
-            print("[ProxyServer] calling sendSuccessResponse for \(host):\(port)")
             self?.sendSuccessResponse(clientConnection)
             print("[ProxyServer] done with onConnected for \(host):\(port)")
         }
 
         tunnelManager.onClose = { [weak self] in
             print("[ProxyServer] onClose callback fired for \(host):\(port)")
-            completionLock.lock()
-            guard !hasCompleted else {
-                completionLock.unlock()
-                return
-            }
-            hasCompleted = true
-            completionLock.unlock()
             if let self = self {
                 self.logStore.completeEntry(logEntry)
                 self.logStore.decrementConnections()
@@ -382,13 +363,6 @@ final class ProxyServer {
 
         tunnelManager.onError = { [weak self] in
             print("[ProxyServer] onError callback fired for \(host):\(port)")
-            completionLock.lock()
-            guard !hasCompleted else {
-                completionLock.unlock()
-                return
-            }
-            hasCompleted = true
-            completionLock.unlock()
             if let self = self {
                 self.logStore.failEntry(logEntry)
                 self.logStore.decrementConnections()
