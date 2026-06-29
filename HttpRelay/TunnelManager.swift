@@ -21,6 +21,13 @@ final class TunnelManager {
     private var responseHeaders: [String: String] = [:]
     private var responseStatusCode: Int?
 
+    private var connectionTimeoutItem: DispatchWorkItem?
+    private let connectionTimeoutSeconds: TimeInterval = 15.0
+
+    private final class DNSResult {
+        var ip: String?
+    }
+
     init(host: String, port: Int, logStore: LogStore, logEntry: LogEntry) {
         self.host = host
         self.port = port
@@ -33,11 +40,15 @@ final class TunnelManager {
         self.connectionStartTime = Date()
 
         print("[TunnelManager] starting tunnel to \(host):\(port)")
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: UInt16(port))!)
+        let resolvedHost = Self.resolveHostWithTimeout(host: host) ?? host
+        print("[TunnelManager] resolved \(host) -> \(resolvedHost)")
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(resolvedHost), port: NWEndpoint.Port(rawValue: UInt16(port))!)
         print("[TunnelManager] endpoint created: \(endpoint)")
         let parameters = NWParameters.tcp
         serverConnection = NWConnection(to: endpoint, using: parameters)
         print("[TunnelManager] serverConnection created, state: \(serverConnection?.state)")
+
+        scheduleConnectionTimeout()
 
         serverConnection?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
@@ -45,6 +56,7 @@ final class TunnelManager {
 
             switch state {
             case .ready:
+                self.cancelConnectionTimeout()
                 print("[TunnelManager] server connection READY to \(self.host):\(self.port)")
                 self.pendingOnConnected = true
                 DispatchQueue.main.async {
@@ -54,6 +66,7 @@ final class TunnelManager {
                 print("[TunnelManager] calling startForwarding")
                 self.startForwarding()
             case .failed(let error):
+                self.cancelConnectionTimeout()
                 print("[TunnelManager] server connection FAILED: \(error)")
                 self.clientConnection?.cancel()
                 DispatchQueue.main.async {
@@ -61,6 +74,7 @@ final class TunnelManager {
                     self.onError?()
                 }
             case .cancelled:
+                self.cancelConnectionTimeout()
                 print("[TunnelManager] server connection CANCELLED")
                 self.clientConnection?.cancel()
                 DispatchQueue.main.async {
@@ -102,9 +116,13 @@ final class TunnelManager {
         self.connectionStartTime = Date()
 
         print("[TunnelManager] startAsProxy: connecting to \(host):\(port)")
-        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: UInt16(port))!)
+        let resolvedHost = Self.resolveHostWithTimeout(host: host) ?? host
+        print("[TunnelManager] startAsProxy resolved \(host) -> \(resolvedHost)")
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(resolvedHost), port: NWEndpoint.Port(rawValue: UInt16(port))!)
         let parameters = NWParameters.tcp
         serverConnection = NWConnection(to: endpoint, using: parameters)
+
+        scheduleConnectionTimeout()
 
         serverConnection?.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
@@ -112,12 +130,14 @@ final class TunnelManager {
 
             switch state {
             case .ready:
+                self.cancelConnectionTimeout()
                 print("[TunnelManager] startAsProxy server READY")
                 DispatchQueue.main.async {
                     self.onConnected?()
                 }
                 self.startProxyForwarding()
             case .failed(let error):
+                self.cancelConnectionTimeout()
                 print("[TunnelManager] startAsProxy server FAILED: \(error)")
                 self.clientConnection?.cancel()
                 DispatchQueue.main.async {
@@ -125,12 +145,17 @@ final class TunnelManager {
                     self.onError?()
                 }
             case .cancelled:
+                self.cancelConnectionTimeout()
                 print("[TunnelManager] startAsProxy server CANCELLED")
                 self.clientConnection?.cancel()
                 DispatchQueue.main.async {
                     self.logStore.completeEntry(self.logEntry)
                     self.onClose?()
                 }
+            case .preparing:
+                print("[TunnelManager] startAsProxy server preparing...")
+            case .waiting(let error):
+                print("[TunnelManager] startAsProxy server waiting: \(error)")
             default:
                 break
             }
@@ -449,5 +474,68 @@ final class TunnelManager {
 
     var clientConnectionRef: NWConnection? {
         return clientConnection
+    }
+
+    private func scheduleConnectionTimeout() {
+        connectionTimeoutItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            guard let conn = self.serverConnection else { return }
+            if conn.state == .ready { return }
+            print("[TunnelManager] connection timeout after \(self.connectionTimeoutSeconds)s, cancelling")
+            conn.cancel()
+            DispatchQueue.main.async {
+                self.logStore.failEntry(self.logEntry)
+                self.onError?()
+            }
+        }
+        connectionTimeoutItem = item
+        queue.asyncAfter(deadline: .now() + connectionTimeoutSeconds, execute: item)
+    }
+
+    private func cancelConnectionTimeout() {
+        connectionTimeoutItem?.cancel()
+        connectionTimeoutItem = nil
+    }
+
+    private static func resolveHostWithTimeout(host: String, timeout: TimeInterval = 3.0) -> String? {
+        if isIPv4Address(host) { return host }
+
+        let result = DNSResult()
+        let semaphore = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { semaphore.signal() }
+
+            host.withCString { hostCStr in
+                var hints = addrinfo()
+                hints.ai_family = AF_INET
+                hints.ai_socktype = SOCK_STREAM
+                hints.ai_protocol = IPPROTO_TCP
+
+                var addrInfo: UnsafeMutablePointer<addrinfo>?
+                let status = getaddrinfo(hostCStr, nil, &hints, &addrInfo)
+                defer { if let r = addrInfo { freeaddrinfo(r) } }
+
+                guard status == 0, let first = addrInfo else { return }
+
+                var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(first.pointee.ai_addr, first.pointee.ai_addrlen,
+                              &buf, socklen_t(buf.count),
+                              nil, 0, NI_NUMERICHOST) == 0 {
+                    result.ip = String(cString: buf)
+                }
+            }
+        }
+
+        if semaphore.wait(timeout: .now() + timeout) == .timedOut {
+            print("[TunnelManager] DNS resolution timeout for \(host) after \(timeout)s")
+            return nil
+        }
+        return result.ip
+    }
+
+    private static func isIPv4Address(_ s: String) -> Bool {
+        return s.range(of: #"^\d{1,3}(\.\d{1,3}){3}$"#, options: .regularExpression) != nil
     }
 }
