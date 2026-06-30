@@ -22,7 +22,7 @@ final class TunnelManager {
     private var responseStatusCode: Int?
 
     private var connectionTimeoutItem: DispatchWorkItem?
-    private let connectionTimeoutSeconds: TimeInterval = 15.0
+    private let connectionTimeoutSeconds: TimeInterval = 30.0
 
     private final class DNSResult {
         var ip: String?
@@ -44,7 +44,7 @@ final class TunnelManager {
         print("[TunnelManager] resolved \(host) -> \(resolvedHost)")
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(resolvedHost), port: NWEndpoint.Port(rawValue: UInt16(port))!)
         print("[TunnelManager] endpoint created: \(endpoint)")
-        let parameters = NWParameters.tcp
+        let parameters = Self.makeTCPParameters()
         serverConnection = NWConnection(to: endpoint, using: parameters)
         print("[TunnelManager] serverConnection created, state: \(serverConnection?.state)")
 
@@ -91,10 +91,24 @@ final class TunnelManager {
             }
         }
 
+        serverConnection?.viabilityUpdateHandler = { [weak self] isViable in
+            print("[TunnelManager] server connection viabilityUpdate: \(isViable)")
+            if !isViable {
+                print("[TunnelManager] server connection NON-VIABLE — killing tunnel")
+                self?.serverConnection?.cancel()
+            }
+        }
+
         serverConnection?.start(queue: queue)
         print("[TunnelManager] serverConnection.start() called")
 
-        self.clientConnection?.stateUpdateHandler = { [weak self] state in
+        clientConnection.viabilityUpdateHandler = { isViable in
+            print("[TunnelManager] client connection viabilityUpdate: \(isViable)")
+            // Do not auto-close on client non-viable; let state/cancel handle it
+            _ = isViable
+        }
+
+        clientConnection.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             print("[TunnelManager] client connection state changed: \(state)")
 
@@ -119,7 +133,7 @@ final class TunnelManager {
         let resolvedHost = Self.resolveHostWithTimeout(host: host) ?? host
         print("[TunnelManager] startAsProxy resolved \(host) -> \(resolvedHost)")
         let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(resolvedHost), port: NWEndpoint.Port(rawValue: UInt16(port))!)
-        let parameters = NWParameters.tcp
+        let parameters = Self.makeTCPParameters()
         serverConnection = NWConnection(to: endpoint, using: parameters)
 
         scheduleConnectionTimeout()
@@ -161,6 +175,14 @@ final class TunnelManager {
             }
         }
 
+        serverConnection?.viabilityUpdateHandler = { [weak self] isViable in
+            print("[TunnelManager] startAsProxy server viabilityUpdate: \(isViable)")
+            if !isViable {
+                print("[TunnelManager] startAsProxy server NON-VIABLE — killing tunnel")
+                self?.serverConnection?.cancel()
+            }
+        }
+
         serverConnection?.start(queue: queue)
     }
 
@@ -171,8 +193,8 @@ final class TunnelManager {
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            if error != nil || isComplete {
-                print("[TunnelManager] startProxyForwarding: server error/complete")
+            if error != nil {
+                print("[TunnelManager] startProxyForwarding: server error")
                 if let client = self.clientConnection {
                     client.cancel()
                 }
@@ -185,20 +207,35 @@ final class TunnelManager {
                     self.hasReceivedFirstResponse = true
                     self.parseAndLogResponse(data: data)
                 }
-                print("[TunnelManager] startProxyForwarding: server->client \(data.count) bytes")
+                if isComplete {
+                    print("[TunnelManager] startProxyForwarding: server->client \(data.count) bytes (FIN follows), then close")
+                } else {
+                    print("[TunnelManager] startProxyForwarding: server->client \(data.count) bytes")
+                }
                 Task { @MainActor in
                     self.logStore.addRxBytes(data.count, to: self.logEntry)
                 }
                 if let client = self.clientConnection {
-                    client.send(content: data, completion: .contentProcessed { error in
+                    client.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
                         if error != nil {
                             client.cancel()
                             server.cancel()
                             return
                         }
-                        self.continueProxyForwarding()
+                        if isComplete {
+                            print("[TunnelManager] startProxyForwarding: data + FIN delivered, closing server")
+                            server.cancel()
+                        } else {
+                            self.continueProxyForwarding()
+                        }
                     })
                 }
+            } else if isComplete {
+                print("[TunnelManager] startProxyForwarding: isComplete with no data, cancelling both")
+                if let client = self.clientConnection {
+                    client.cancel()
+                }
+                server.cancel()
             } else {
                 self.continueProxyForwarding()
             }
@@ -210,8 +247,8 @@ final class TunnelManager {
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
 
-            if error != nil || isComplete {
-                print("[TunnelManager] continueProxyForwarding: server error/complete")
+            if error != nil {
+                print("[TunnelManager] continueProxyForwarding: server error")
                 if let client = self.clientConnection {
                     client.cancel()
                 }
@@ -228,15 +265,26 @@ final class TunnelManager {
                     self.logStore.addRxBytes(data.count, to: self.logEntry)
                 }
                 if let client = self.clientConnection {
-                    client.send(content: data, completion: .contentProcessed { error in
+                    client.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
                         if error != nil {
                             client.cancel()
                             server.cancel()
                             return
                         }
-                        self.continueProxyForwarding()
+                        if isComplete {
+                            print("[TunnelManager] continueProxyForwarding: data + FIN delivered, closing server")
+                            server.cancel()
+                        } else {
+                            self.continueProxyForwarding()
+                        }
                     })
                 }
+            } else if isComplete {
+                print("[TunnelManager] continueProxyForwarding: isComplete with no data, cancelling both")
+                if let client = self.clientConnection {
+                    client.cancel()
+                }
+                server.cancel()
             } else {
                 self.continueProxyForwarding()
             }
@@ -266,40 +314,7 @@ final class TunnelManager {
         print("[TunnelManager]   client state: \(client.state)")
         print("[TunnelManager]   server state: \(server.state)")
 
-        print("[TunnelManager] starting bidirectional forwarding")
-
-        print("[TunnelManager] setting up client receive handler")
-        client.receive(minimumIncompleteLength: 0, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
-
-            print("[TunnelManager] client->server callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
-
-            if error != nil || isComplete {
-                print("[TunnelManager] client->server error/complete, cancelling")
-                client.cancel()
-                server.cancel()
-                return
-            }
-
-            if let data = data, !data.isEmpty {
-                print("[TunnelManager] client->server forwarding \(data.count) bytes")
-                Task { @MainActor in
-                    self.logStore.addTxBytes(data.count, to: self.logEntry)
-                }
-                server.send(content: data, completion: .contentProcessed { error in
-                    if error != nil {
-                        print("[TunnelManager] server send error")
-                        client.cancel()
-                        server.cancel()
-                        return
-                    }
-                    self.forwardToServer(client: client, server: server)
-                })
-            } else {
-                print("[TunnelManager] client->server: no data (count=-1 or empty), keeping connection open...")
-                self.forwardToServer(client: client, server: server)
-            }
-        }
+        print("[TunnelManager] server-side forwarding only; client-side receive is handled by ProxyServer")
 
         print("[TunnelManager] setting up server receive handler")
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
@@ -307,8 +322,8 @@ final class TunnelManager {
 
             print("[TunnelManager] server->client callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
-            if error != nil || isComplete {
-                print("[TunnelManager] server->client error/complete, cancelling")
+            if error != nil {
+                print("[TunnelManager] server->client error, cancelling")
                 client.cancel()
                 server.cancel()
                 return
@@ -319,19 +334,32 @@ final class TunnelManager {
                     self.hasReceivedFirstResponse = true
                     self.parseAndLogResponse(data: data)
                 }
-                print("[TunnelManager] server->client forwarding \(data.count) bytes")
+                if isComplete {
+                    print("[TunnelManager] server->client forwarding \(data.count) bytes (FIN follows), then close")
+                } else {
+                    print("[TunnelManager] server->client forwarding \(data.count) bytes")
+                }
                 Task { @MainActor in
                     self.logStore.addRxBytes(data.count, to: self.logEntry)
                 }
-                client.send(content: data, completion: .contentProcessed { error in
+                client.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
                     if error != nil {
                         print("[TunnelManager] client send error")
                         client.cancel()
                         server.cancel()
                         return
                     }
-                    self.forwardToClient(client: client, server: server)
+                    if isComplete {
+                        print("[TunnelManager] server->client: last bytes + FIN delivered, closing server")
+                        server.cancel()
+                    } else {
+                        self.forwardToClient(client: client, server: server)
+                    }
                 })
+            } else if isComplete {
+                print("[TunnelManager] server->client: isComplete with no data, cancelling both")
+                client.cancel()
+                server.cancel()
             } else {
                 print("[TunnelManager] server->client: no data (count=-1 or empty), keeping connection open...")
                 self.forwardToClient(client: client, server: server)
@@ -375,41 +403,6 @@ final class TunnelManager {
         }
     }
 
-    private func forwardToServer(client: NWConnection, server: NWConnection) {
-        print("[TunnelManager] forwardToServer: calling receive")
-        client.receive(minimumIncompleteLength: 0, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
-
-            print("[TunnelManager] forwardToServer callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
-
-            if error != nil || isComplete {
-                print("[TunnelManager] forwardToServer: error/complete, cancelling")
-                client.cancel()
-                server.cancel()
-                return
-            }
-
-            if let data = data, !data.isEmpty {
-                print("[TunnelManager] forwardToServer: forwarding \(data.count) bytes")
-                Task { @MainActor in
-                    self.logStore.addTxBytes(data.count, to: self.logEntry)
-                }
-                server.send(content: data, completion: .contentProcessed { error in
-                    if error != nil {
-                        print("[TunnelManager] forwardToServer: send error")
-                        client.cancel()
-                        server.cancel()
-                        return
-                    }
-                    self.forwardToServer(client: client, server: server)
-                })
-            } else {
-                print("[TunnelManager] forwardToServer: no data, recursing")
-                self.forwardToServer(client: client, server: server)
-            }
-        }
-    }
-
     private func forwardToClient(client: NWConnection, server: NWConnection) {
         print("[TunnelManager] forwardToClient: calling receive")
         server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
@@ -417,8 +410,8 @@ final class TunnelManager {
 
             print("[TunnelManager] forwardToClient callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete)")
 
-            if error != nil || isComplete {
-                print("[TunnelManager] forwardToClient: error/complete, cancelling")
+            if error != nil {
+                print("[TunnelManager] forwardToClient: error, cancelling")
                 client.cancel()
                 server.cancel()
                 return
@@ -429,19 +422,32 @@ final class TunnelManager {
                     self.hasReceivedFirstResponse = true
                     self.parseAndLogResponse(data: data)
                 }
-                print("[TunnelManager] forwardToClient: forwarding \(data.count) bytes")
+                if isComplete {
+                    print("[TunnelManager] forwardToClient: forwarding \(data.count) bytes (FIN follows), then close")
+                } else {
+                    print("[TunnelManager] forwardToClient: forwarding \(data.count) bytes")
+                }
                 Task { @MainActor in
                     self.logStore.addRxBytes(data.count, to: self.logEntry)
                 }
-                client.send(content: data, completion: .contentProcessed { error in
+                client.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
                     if error != nil {
                         print("[TunnelManager] forwardToClient: send error")
                         client.cancel()
                         server.cancel()
                         return
                     }
-                    self.forwardToClient(client: client, server: server)
+                    if isComplete {
+                        print("[TunnelManager] forwardToClient: last bytes + FIN delivered, closing server")
+                        server.cancel()
+                    } else {
+                        self.forwardToClient(client: client, server: server)
+                    }
                 })
+            } else if isComplete {
+                print("[TunnelManager] forwardToClient: isComplete with no data, cancelling both")
+                client.cancel()
+                server.cancel()
             } else {
                 print("[TunnelManager] forwardToClient: no data, recursing")
                 self.forwardToClient(client: client, server: server)
@@ -463,9 +469,13 @@ final class TunnelManager {
             print("[TunnelManager] receiveClientData: no server connection")
             return
         }
-        server.send(content: data, completion: .contentProcessed { [weak self] error in
+        guard server.state == .ready else {
+            print("[TunnelManager] receiveClientData: server not ready (state=\(server.state)), dropping \(data.count) bytes (browser will retry)")
+            return
+        }
+        server.send(content: data, completion: .contentProcessed { error in
             if let error = error {
-                print("[TunnelManager] receiveClientData: send error: \(error)")
+                print("[TunnelManager] receiveClientData: send error: \(error) — NOT closing tunnel; teardown handled by state handlers")
                 return
             }
             print("[TunnelManager] receiveClientData: forwarded \(data.count) bytes to server")
@@ -481,12 +491,18 @@ final class TunnelManager {
         let item = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             guard let conn = self.serverConnection else { return }
-            if conn.state == .ready { return }
-            print("[TunnelManager] connection timeout after \(self.connectionTimeoutSeconds)s, cancelling")
-            conn.cancel()
-            DispatchQueue.main.async {
-                self.logStore.failEntry(self.logEntry)
-                self.onError?()
+            switch conn.state {
+            case .ready:
+                return
+            case .cancelled, .failed:
+                return
+            default:
+                print("[TunnelManager] connection still not ready after \(self.connectionTimeoutSeconds)s (state=\(conn.state)), cancelling")
+                conn.cancel()
+                DispatchQueue.main.async {
+                    self.logStore.failEntry(self.logEntry)
+                    self.onError?()
+                }
             }
         }
         connectionTimeoutItem = item
@@ -496,6 +512,20 @@ final class TunnelManager {
     private func cancelConnectionTimeout() {
         connectionTimeoutItem?.cancel()
         connectionTimeoutItem = nil
+    }
+
+    private static func makeTCPParameters() -> NWParameters {
+        let parameters = NWParameters.tcp
+        if let tcpOptions = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
+            tcpOptions.connectionTimeout = 30
+            tcpOptions.keepaliveIdle = 30
+            tcpOptions.keepaliveInterval = 10
+            tcpOptions.keepaliveCount = 3
+            tcpOptions.enableFastOpen = true
+            tcpOptions.noDelay = true
+        }
+        parameters.allowLocalEndpointReuse = true
+        return parameters
     }
 
     private static func resolveHostWithTimeout(host: String, timeout: TimeInterval = 3.0) -> String? {

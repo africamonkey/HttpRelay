@@ -190,9 +190,6 @@ final class ProxyServer {
             print("[ProxyServer] processRequest: handling as HTTP proxy request")
             handleHTTPPxoyRequest(method: method, methodStr: methodStr, target: target, request: request, connection: connection)
         }
-
-        print("[ProxyServer] processRequest: continuing to wait for more data on connection")
-        self.receiveHTTPRequest(connection)
     }
 
     private func handleHTTPPxoyRequest(method: LogEntry.HTTPMethod, methodStr: String, target: String, request: String, connection: NWConnection) {
