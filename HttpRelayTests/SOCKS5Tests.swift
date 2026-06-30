@@ -39,6 +39,23 @@ struct SOCKS5Tests {
         conn.cancel()
         await server.stop()
     }
+
+    @Test @MainActor func request_BIND_returns_0x07() async throws {
+        let server = try await TestSOCKS5.start()
+        let conn = NWConnection(host: .ipv4(.loopback), port: server.port, using: .tcp)
+        let greetingReply = try await TestSOCKS5.connectAndReceive(conn, count: 2, timeout: .seconds(2))
+        #expect(greetingReply == Data([0x05, 0x00]))
+
+        var req = Data([0x05, 0x02, 0x00, 0x01])  // VER=5 CMD=2(BIND) RSV=0 ATYP=1(IPv4)
+        req.append(contentsOf: [127, 0, 0, 1])
+        req.append(contentsOf: [0x00, 0x00])
+        try await TestTCP.send(conn, req, timeout: .seconds(2))
+        let reply = try await TestTCP.receive(conn, minIncomplete: 10, maxLength: 10, timeout: .seconds(3))
+        #expect(reply[0] == 0x05)
+        #expect(reply[1] == 0x07)  // command not supported
+        conn.cancel()
+        await server.stop()
+    }
 }
 
 enum TestSOCKS5 {
