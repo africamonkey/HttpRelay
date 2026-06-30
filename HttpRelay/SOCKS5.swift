@@ -3,7 +3,6 @@ import Network
 
 enum SOCKS5Error: Error {
     case malformed
-    case unsupportedCommand
     case unsupportedAddressType
 }
 
@@ -56,7 +55,7 @@ enum SOCKS5Parser {
     }
 
     /// Reply bytes: 0x05 STATUS RSV ATYP BND.ADDR BND.PORT
-    static func makeReply(status: UInt8, bind: NWEndpoint?) -> Data {
+    static func makeReply(status: UInt8, bind _: NWEndpoint? = nil) -> Data {
         var bytes = Data([0x05, status, 0x00])
         bytes.append(contentsOf: [0x01, 0, 0, 0, 0, 0, 0])
         return bytes
@@ -113,36 +112,40 @@ final class SOCKS5Server {
         }
     }
 
+    private final class Buffer {
+        var data = Data()
+    }
+
     private func receiveRequest(_ connection: NWConnection) {
-        var buffer = Data()
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
-            if let data = data { buffer.append(data) }
+        let buf = Buffer()
+        func pump() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+                guard let self = self else { return }
+                if let data = data { buf.data.append(data) }
 
-            do {
-                while true {
-                    let savedCount = buffer.count
-                    if let req = try SOCKS5Parser.parse(buffer: &buffer) {
-                        self.dispatch(connection: connection, request: req)
-                        return
+                do {
+                    while true {
+                        let savedCount = buf.data.count
+                        if let req = try SOCKS5Parser.parse(buffer: &buf.data) {
+                            self.dispatch(connection: connection, request: req)
+                            return
+                        }
+                        if buf.data.count == savedCount { break }  // not enough; wait
                     }
-                    if buffer.count == savedCount { break }
+                } catch is SOCKS5Error {
+                    connection.send(content: SOCKS5Parser.makeReply(status: 0x01),
+                                   completion: .contentProcessed { _ in connection.cancel() })
+                    return
+                } catch {
+                    connection.cancel()
+                    return
                 }
-            } catch is SOCKS5Error {
-                connection.send(content: SOCKS5Parser.makeReply(status: 0x01, bind: nil),
-                               completion: .contentProcessed { _ in connection.cancel() })
-                return
-            } catch {
-                connection.cancel()
-                return
-            }
 
-            if error != nil || isComplete {
-                connection.cancel()
-                return
+                if error != nil || isComplete { connection.cancel(); return }
+                pump()  // re-arm with the SAME buffer
             }
-            self.receiveRequest(connection)
         }
+        pump()
     }
 
     private func dispatch(connection: NWConnection, request: SOCKS5Request) {
@@ -162,7 +165,7 @@ final class SOCKS5Server {
 
         switch request.cmd {
         case .bind:
-            connection.send(content: SOCKS5Parser.makeReply(status: 0x07, bind: nil),
+            connection.send(content: SOCKS5Parser.makeReply(status: 0x07),
                            completion: .contentProcessed { _ in connection.cancel() })
         case .connect:
             print("[SOCKS5] CONNECT handler not yet implemented (Task 3) — closing")
