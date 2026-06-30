@@ -7,6 +7,7 @@ final class ProxyServer {
     private let port: UInt16
     private var listener: NWListener?
     private let logStore: LogStore
+    private let socks5Server: SOCKS5Server
     private var activeTunnels: [String: TunnelManager] = [:]
     private let tunnelsLock = NSLock()
     private(set) var localIP: String = "—"
@@ -16,6 +17,11 @@ final class ProxyServer {
     init(port: UInt16 = 10808, logStore: LogStore) {
         self.port = port
         self.logStore = logStore
+        self.socks5Server = SOCKS5Server(logStore: logStore)
+    }
+
+    var boundPort: NWEndpoint.Port? {
+        return listener?.port
     }
 
     private func getLocalIPAddress() -> String? {
@@ -72,6 +78,7 @@ final class ProxyServer {
     func stop() {
         listener?.cancel()
         listener = nil
+        socks5Server.stop()
     }
 
     private func handleNewConnection(_ connection: NWConnection) {
