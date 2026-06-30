@@ -128,7 +128,7 @@ Client → `0x05 VER CMD RSV ATYP ADDR PORT`
 | CMD | `0x01` CONNECT, `0x02` BIND, `0x03` UDP_ASSOCIATE |
 | RSV | `0x00` enforced; if not, reply `0x05 0x01 ...` |
 | ATYP | `0x01` IPv4, `0x03` DOMAINNAME (length-prefixed), `0x04` IPv6 |
-| DOMAINNAME length | ≤ 255 octets, else reply `0x05 0x01 ...` |
+| DOMAINNAME length | ≤ 255 octets (single byte, RFC §4); reject if declared length would overflow our read buffer |
 | ADDR PORT | based on ATYP |
 
 ### Reply
@@ -155,7 +155,7 @@ Server → `0x05 STATUS RSV ATYP BND.ADDR BND.PORT`
 
 ### UDP_ASSOCIATE Flow
 
-1. Parse request; `host`/`port` here are *the client's own relay address* (often `0.0.0.0:0`, meaning "let server pick"). These are **stored** so the server knows where to send replies for the lifetime of this association. We do not actually use them as the listening address — the listener address is fixed.
+1. Parse request; the `host`/`port` fields in the request are the client's own preferred UDP relay address (typically `0.0.0.0:0` meaning "server picks"). **We ignore them.** What the server replies with is the address of the server's UDP listener (allocated by `NWListener(using: .udp, on: .any)` at first UDP_ASSOCIATE).
 
 2. Make sure `SOCKS5UDPRelay.start()` has been called. Idempotent — first call creates listener, subsequent calls just return the bound port.
 
