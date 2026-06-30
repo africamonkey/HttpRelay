@@ -44,7 +44,7 @@ struct SOCKS5Tests {
 enum TestSOCKS5 {
 
     @MainActor
-    static func start() async throws -> Running {
+    static func start() async throws -> RunningSOCKS5 {
         let logStore = LogStore()
         let socks5Server = SOCKS5Server(logStore: logStore)
         let parameters = NWParameters.tcp
@@ -72,7 +72,7 @@ enum TestSOCKS5 {
         guard let port = listener.port else {
             throw NSError(domain: "TestSOCKS5", code: 0, userInfo: [NSLocalizedDescriptionKey: "listener has no port"])
         }
-        return Running(port: port, listener: listener, server: socks5Server)
+        return RunningSOCKS5(port: port, listener: listener, server: socks5Server)
     }
 
     static func connectAndReceive(_ conn: NWConnection, count: Int, timeout: Duration) async throws -> Data {
@@ -80,7 +80,7 @@ enum TestSOCKS5 {
     }
 }
 
-struct Running {
+struct RunningSOCKS5 {
     let port: NWEndpoint.Port
     private let listener: NWListener
     private let server: SOCKS5Server

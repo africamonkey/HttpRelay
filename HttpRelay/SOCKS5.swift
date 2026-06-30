@@ -6,7 +6,6 @@ final class SOCKS5Server {
     private let queue = DispatchQueue(label: "com.httprelay.socks5")
     private var udpRelay: SOCKS5UDPRelay?
 
-    @MainActor
     init(logStore: LogStore) {
         self.logStore = logStore
     }
