@@ -185,6 +185,54 @@ struct SOCKS5Tests {
         await proxy.stop()
     }
 
+    @Test @MainActor func udp_relay_replyRoutedBackToClient_wrappedWithSOCKS5Header() async throws {
+        let echo = try await TestEcho.startUDP()
+        let proxy = try await TestSOCKS5.start()
+        let conn = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
+        try await TestTCP.send(conn, Data([0x05, 0x01, 0x00]), timeout: .seconds(2))
+        _ = try await TestTCP.receive(conn, minIncomplete: 2, maxLength: 2, timeout: .seconds(2))
+
+        // UDP_ASSOCIATE → get relay port.
+        var req = Data([0x05, 0x03, 0x00, 0x01])
+        req.append(contentsOf: [127, 0, 0, 1])
+        req.append(contentsOf: [0x00, 0x00])
+        try await TestTCP.send(conn, req, timeout: .seconds(2))
+        let reply = try await TestTCP.receive(conn, minIncomplete: 10, maxLength: 10, timeout: .seconds(3))
+        let relayPort = UInt16(reply[8]) << 8 | UInt16(reply[9])
+
+        // Set up a client-side UDP listener.
+        let clientUDP = try await TestUDPListener.start()
+        defer { Task { await TestUDPListener.stop(clientUDP) } }
+
+        // Build SOCKS5 UDP packet: forward 4-byte payload to echo.
+        var pkt = Data([0x00, 0x00, 0x00, 0x01])
+        pkt.append(contentsOf: [127, 0, 0, 1])
+        pkt.append(contentsOf: [UInt8(echo.port.rawValue >> 8), UInt8(echo.port.rawValue & 0xff)])
+        let payload: [UInt8] = [0xAA, 0xBB, 0xCC, 0xDD]
+        pkt.append(contentsOf: payload)
+        try await TestUDPListener.send(clientUDP, pkt, toHost: "127.0.0.1", port: relayPort)
+
+        // Wait for the wrapped reply to come back to clientUDP.
+        // The reply is a SOCKS5 UDP header (10 bytes) + the echoed payload (4 bytes) = 14 bytes total.
+        let wrapped = try await TestUDPListener.recvWithTimeout(clientUDP, count: 14, timeout: .seconds(3))
+        #expect(wrapped.count >= 10)
+        #expect(Array(wrapped[0..<2]) == [0x00, 0x00])  // RSV
+        #expect(wrapped[2] == 0x00)                    // FRAG
+        #expect(wrapped[3] == 0x01)                    // ATYP = IPv4
+        // DST.ADDR = 127.0.0.1
+        #expect(Array(wrapped[4..<8]) == [127, 0, 0, 1])
+        // DST.PORT = echo's port (this is what we recorded when forwarding)
+        let portBack = UInt16(wrapped[8]) << 8 | UInt16(wrapped[9])
+        #expect(portBack == echo.port.rawValue)
+        // DATA (4 bytes)
+        #expect(wrapped.count >= 14)
+        #expect(Array(wrapped[10..<14]) == payload)
+
+        conn.cancel()
+        await echo.stop()
+        await proxy.stop()
+    }
+
     /// Polyglot listener: the same TCP listener must accept both SOCKS5
     /// (first byte 0x05) and HTTP CONNECT (first byte is an ASCII letter)
     /// on the same port. SOCKS5 reply and HTTP reply must both come back.
