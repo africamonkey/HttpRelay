@@ -227,6 +227,44 @@ struct SOCKS5Tests {
     // (`handleReply` in SOCKS5.swift) but the test was deemed
     // not worth the time-investment to make robust. The reply path
     // is exercised by the live app's WebRTC flow.
+
+    /// End-to-end smoke: a single SOCKS5 listener must accept both
+    /// SOCKS5 CONNECT and SOCKS5 UDP_ASSOCIATE on the same port within
+    /// the same session lifecycle. This verifies the polyglot listener
+    /// protocol dispatch and the existing TCP/UDP arms coexist.
+    @Test @MainActor func endToEnd_TCP_CONNECT_then_UDP_ASSOCIATE_onSamePort() async throws {
+        let echoTCP = try await TestEcho.startTCP()
+        let echoUDP = try await TestEcho.startUDP()
+        let proxy = try await TestSOCKS5.start()
+
+        // 1. TCP CONNECT — roundtrip 16 bytes via local echo.
+        let tcpClient = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
+        try await TestSOCKS5.handshakeAndSendConnect(tcpClient, toHost: "127.0.0.1", port: echoTCP.port.rawValue)
+        let tcpReply = try await TestTCP.receive(tcpClient, minIncomplete: 10, maxLength: 10, timeout: .seconds(2))
+        #expect(tcpReply[0] == 0x05 && tcpReply[1] == 0x00)
+        try await TestTCP.send(tcpClient, Data(repeating: 0x33, count: 16), timeout: .seconds(2))
+        let echoed = try await TestTCP.receive(tcpClient, minIncomplete: 16, maxLength: 16, timeout: .seconds(2))
+        #expect(echoed == Data(repeating: 0x33, count: 16))
+
+        // 2. UDP_ASSOCIATE on the same port.
+        let udpControl = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
+        try await TestSOCKS5.handshakeAndSendConnect(udpControl, toHost: "127.0.0.1", port: 0, cmd: 0x03)
+        let udpReply = try await TestTCP.receive(udpControl, minIncomplete: 10, maxLength: 10, timeout: .seconds(2))
+        #expect(udpReply[0] == 0x05 && udpReply[1] == 0x00)
+        let relayPort = UInt16(udpReply[8]) << 8 | UInt16(udpReply[9])
+        #expect(relayPort != 0)
+
+        // 3. Forward a UDP datagram via SOCKS5 UDP header. The TCP `connect_to_local_echo`
+        //    test (Task 3) and the `udp_relay_forwards_datagram_to_realTarget` test (Task 6)
+        //    already verify these paths. This test just confirms the listener accepts
+        //    BOTH protocols on the same port within a single SOCKS5 session lifecycle.
+
+        tcpClient.cancel()
+        udpControl.cancel()
+        await echoTCP.stop()
+        await echoUDP.stop()
+        await proxy.stop()
+    }
 }
 
 enum TestSOCKS5 {
@@ -269,15 +307,21 @@ enum TestSOCKS5 {
 }
 
 extension TestSOCKS5 {
-    /// Do greeting, then send a CONNECT request for `host:port`.
-    static func handshakeAndSendConnect(_ conn: NWConnection, toHost host: String, port: UInt16) async throws {
+    /// Do greeting, then send a request for `host:port` with the given SOCKS5
+    /// CMD byte (default 0x01 = CONNECT; 0x03 = UDP_ASSOCIATE).
+    static func handshakeAndSendConnect(
+        _ conn: NWConnection,
+        toHost host: String,
+        port: UInt16,
+        cmd: UInt8 = 0x01
+    ) async throws {
         conn.start(queue: .global())
         try await TestTCP.send(conn, Data([0x05, 0x01, 0x00]), timeout: .seconds(2))
         let reply = try await TestTCP.receive(conn, minIncomplete: 2, maxLength: 2, timeout: .seconds(2))
         guard reply == Data([0x05, 0x00]) else {
             throw TestError("greeting failed: \(Array(reply))")
         }
-        var req = Data([0x05, 0x01, 0x00, 0x01])  // CONNECT, IPv4
+        var req = Data([0x05, cmd, 0x00, 0x01])  // CMD (CONNECT or UDP_ASSOCIATE), IPv4
         let parts = host.split(separator: ".").compactMap { UInt8($0) }
         guard parts.count == 4 else { throw TestError("only IPv4 supported in test helper") }
         req.append(contentsOf: parts)
