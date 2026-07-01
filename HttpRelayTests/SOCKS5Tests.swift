@@ -116,6 +116,33 @@ struct SOCKS5Tests {
     // iOS Simulator (port 1 hangs, port 65000 sometimes refused too fast),
     // and the failure path is exercised by the real-world data flow tests
     // we run against the live app.
+
+    /// Polyglot listener: the same TCP listener must accept both SOCKS5
+    /// (first byte 0x05) and HTTP CONNECT (first byte is an ASCII letter)
+    /// on the same port. SOCKS5 reply and HTTP reply must both come back.
+    @Test @MainActor func polyglot_dispatches_SOCKS5_and_HTTP_on_same_port() async throws {
+        let proxy = try await TestProxy.start(logStore: LogStore())
+
+        // SOCKS5 client — 0x05 greeting
+        let socks = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
+        socks.start(queue: .global())
+        try await TestTCP.send(socks, Data([0x05, 0x01, 0x00]), timeout: .seconds(2))
+        let socksReply = try await TestTCP.receive(socks, minIncomplete: 2, maxLength: 2, timeout: .seconds(2))
+        #expect(socksReply == Data([0x05, 0x00]))
+
+        // HTTP client on the same port — uppercase 'C' dispatches to the HTTP path
+        let http = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
+        http.start(queue: .global())
+        let httpReq = ("CONNECT 127.0.0.1:1 HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").data(using: .utf8)!
+        try await TestTCP.send(http, httpReq, timeout: .seconds(2))
+        let httpReply = try await TestTCP.receive(http, minIncomplete: 12, maxLength: 256, timeout: .seconds(2))
+        let prefix = String(data: httpReply.prefix(9), encoding: .utf8) ?? ""
+        #expect(prefix == "HTTP/1.1 ")
+
+        socks.cancel()
+        http.cancel()
+        proxy.stop()
+    }
 }
 
 enum TestSOCKS5 {

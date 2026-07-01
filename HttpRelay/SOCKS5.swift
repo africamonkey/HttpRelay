@@ -71,11 +71,18 @@ final class SOCKS5Server {
         self.logStore = logStore
     }
 
-    /// Called by ProxyServer after the first byte (0x05) has already been
-    /// consumed by the polyglot dispatcher (Task 4).
-    func handle(connection: NWConnection) {
+    /// Called by ProxyServer (or by TestSOCKS5) when a new connection arrives.
+    /// `firstByteConsumed` is `true` when ProxyServer's polyglot dispatcher
+    /// has already consumed the 0x05 version byte; in that case the next
+    /// byte in the buffer is NMETHODS. When `false`, the first receive
+    /// will start at the SOCKS5 version byte (legacy / test-only path).
+    func handle(connection: NWConnection, firstByteConsumed: Bool = false) {
         connection.start(queue: queue)
-        receiveGreeting(connection)
+        if firstByteConsumed {
+            receiveMethodsAfterDispatch(connection)
+        } else {
+            receiveGreeting(connection)
+        }
     }
 
     /// Stop accepting new work.
@@ -99,6 +106,35 @@ final class SOCKS5Server {
                 connection.cancel(); return
             }
             let offered = bytes.subdata(in: 2..<(2 + nMethods))
+            if !offered.contains(0x00) {
+                connection.send(content: Data([0x05, 0xFF]), completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
+                return
+            }
+            connection.send(content: Data([0x05, 0x00]), completion: .contentProcessed { error in
+                if error != nil { connection.cancel(); return }
+                self.receiveRequest(connection)
+            })
+        }
+    }
+
+    /// Like `receiveGreeting` but the 0x05 version byte has already been
+    /// consumed by ProxyServer's polyglot dispatcher. The remaining bytes
+    /// start with NMETHODS, so we skip the version check.
+    private func receiveMethodsAfterDispatch(_ connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 2, maximumLength: 257) { [weak self] data, _, _, error in
+            guard let self = self else { return }
+            if error != nil || data == nil || data!.count < 2 {
+                connection.cancel(); return
+            }
+            let bytes = data!
+            // No version byte: bytes[0] is NMETHODS.
+            let nMethods = Int(bytes[0])
+            guard bytes.count >= 1 + nMethods else {
+                connection.cancel(); return
+            }
+            let offered = bytes.subdata(in: 1..<(1 + nMethods))
             if !offered.contains(0x00) {
                 connection.send(content: Data([0x05, 0xFF]), completion: .contentProcessed { _ in
                     connection.cancel()

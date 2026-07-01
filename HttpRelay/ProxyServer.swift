@@ -84,7 +84,86 @@ final class ProxyServer {
     private func handleNewConnection(_ connection: NWConnection) {
         connection.start(queue: .global())
 
-        receiveHTTPRequest(connection)
+        // Polyglot dispatcher: peek 1 byte to decide SOCKS5 vs HTTP.
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { [weak self] byte, _, _, error in
+            guard let self = self, let byte = byte?.first else {
+                connection.cancel()
+                return
+            }
+            switch byte {
+            case 0x05:
+                // SOCKS5 greeting always starts with 0x05. The version
+                // byte has already been consumed by the peek, so tell
+                // the SOCKS5 server.
+                self.socks5Server.handle(connection: connection, firstByteConsumed: true)
+            case 0x41...0x5A, 0x61...0x7A:
+                // HTTP method: uppercase letter (CONNECT/GET/POST/...) or lowercase defensive
+                self.handleHTTPConnection(connection, pushback: byte)
+            default:
+                connection.cancel()
+            }
+        }
+    }
+
+    /// Handles a connection whose first byte is ASCII (an HTTP method). The
+    /// byte was already consumed by the polyglot dispatcher, so we re-feed
+    /// it into a fresh receive that buffers bytes until the request line
+    /// and headers are complete, then hands off to the existing
+    /// `processRequest` pipeline.
+    private func handleHTTPConnection(_ connection: NWConnection, pushback: UInt8) {
+        let buf = HTTPRequestBuffer(pushback: pushback)
+
+        func pump() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                if isComplete || error != nil {
+                    connection.cancel()
+                    return
+                }
+                guard let data = data, !data.isEmpty else {
+                    pump()
+                    return
+                }
+                buf.append(data)
+                switch buf.tryParse() {
+                case .needMore:
+                    pump()
+                case .ready(let request):
+                    self.processRequest(request, connection: connection)
+                    // processRequest kicks off its own receive chain. We're done here.
+                }
+            }
+        }
+        pump()
+    }
+
+    /// Small per-connection buffer that consumes the request line + headers
+    /// and yields the parsed `request: String` once the header block is
+    /// complete (terminated by `\r\n\r\n`).
+    private final class HTTPRequestBuffer {
+        private var data: Data
+        init(pushback: UInt8) { data = Data([pushback]) }
+        func append(_ more: Data) { data.append(more) }
+
+        enum ParseResult {
+            case needMore
+            case ready(request: String)
+        }
+
+        func tryParse() -> ParseResult {
+            // Need \r\n\r\n to indicate end of headers.
+            guard let endRange = data.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) else {
+                return .needMore
+            }
+            // Request line + headers; if there's a body in the same buffer we
+            // include it. processRequest parses just the request line — extra
+            // bytes are handled by the existing receive loop in receiveHTTPRequest.
+            let headerEnd = endRange.upperBound
+            let requestBytes = data.subdata(in: 0..<headerEnd)
+            // Strip the trailing \r\n\r\n — processRequest expects the
+            // header block without the terminator.
+            let request = String(data: requestBytes.dropLast(4), encoding: .utf8) ?? ""
+            return .ready(request: request)
+        }
     }
 
     private func receiveHTTPRequest(_ connection: NWConnection) {
@@ -197,6 +276,12 @@ final class ProxyServer {
             print("[ProxyServer] processRequest: handling as HTTP proxy request")
             handleHTTPPxoyRequest(method: method, methodStr: methodStr, target: target, request: request, connection: connection)
         }
+        // NOTE: do not call receiveHTTPRequest here. The receive loop is
+        // started either after a successful CONNECT handshake (in
+        // establishTunnel's onConnected) or after an HTTP proxy request is
+        // set up. Starting it here would cause the receive loop to consume
+        // the proxy's own HTTP error reply bytes as if they were a new
+        // request.
     }
 
     private func handleHTTPPxoyRequest(method: LogEntry.HTTPMethod, methodStr: String, target: String, request: String, connection: NWConnection) {
@@ -235,6 +320,9 @@ final class ProxyServer {
         tunnelManager.onConnected = { [weak self] in
             print("[ProxyServer] handleHTTPPxoyRequest: connected to \(host):\(port), sending request")
             self?.sendHTTPProxyRequest(tunnelManager: tunnelManager, methodStr: methodStr, path: path, query: query, request: request, connection: connection)
+            // Tunnel established; start forwarding client→server bytes
+            // (POST body, follow-up requests on the same connection).
+            self?.receiveHTTPRequest(connection)
         }
 
         tunnelManager.onClose = { [weak self] in
@@ -351,6 +439,9 @@ final class ProxyServer {
         tunnelManager.onConnected = { [weak self] in
             print("[ProxyServer] onConnected callback fired for \(host):\(port)")
             self?.sendSuccessResponse(clientConnection)
+            // Tunnel established: now start forwarding client→server bytes
+            // through the receive loop.
+            self?.receiveHTTPRequest(clientConnection)
             print("[ProxyServer] done with onConnected for \(host):\(port)")
         }
 
@@ -370,7 +461,9 @@ final class ProxyServer {
             if let self = self {
                 self.logStore.failEntry(logEntry)
                 self.logStore.decrementConnections()
-                clientConnection.cancel()
+                // Reply to the client with 502 so HTTP clients see a proper
+                // status line instead of a silent close.
+                self.sendErrorResponse(clientConnection, code: "502 Bad Gateway")
                 self.tunnelsLock.lock()
                 self.activeTunnels.removeValue(forKey: key)
                 self.tunnelsLock.unlock()

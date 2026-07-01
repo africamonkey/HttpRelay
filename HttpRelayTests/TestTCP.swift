@@ -39,16 +39,28 @@ enum TestTCP {
     static func send(_ conn: NWConnection, _ data: Data, timeout: Duration) async throws {
         let interval = seconds(timeout)
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            let lock = NSLock()
+            var resumed = false
+            func safeResume(_ block: () -> Void) {
+                lock.lock()
+                if resumed {
+                    lock.unlock()
+                    return
+                }
+                resumed = true
+                lock.unlock()
+                block()
+            }
             let deadline = DispatchWorkItem {
-                cont.resume(throwing: NSError(domain: "TestTCP", code: 2, userInfo: [NSLocalizedDescriptionKey: "send timeout"]))
+                safeResume { cont.resume(throwing: NSError(domain: "TestTCP", code: 2, userInfo: [NSLocalizedDescriptionKey: "send timeout"])) }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + interval, execute: deadline)
             conn.send(content: data, completion: .contentProcessed { error in
                 deadline.cancel()
                 if let error = error {
-                    cont.resume(throwing: error)
+                    safeResume { cont.resume(throwing: error) }
                 } else {
-                    cont.resume()
+                    safeResume { cont.resume() }
                 }
             })
         }
@@ -57,18 +69,30 @@ enum TestTCP {
     static func receive(_ conn: NWConnection, minIncomplete: Int, maxLength: Int, timeout: Duration) async throws -> Data {
         let interval = seconds(timeout)
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            let lock = NSLock()
+            var resumed = false
+            func safeResume(_ block: () -> Void) {
+                lock.lock()
+                if resumed {
+                    lock.unlock()
+                    return
+                }
+                resumed = true
+                lock.unlock()
+                block()
+            }
             let deadline = DispatchWorkItem {
-                cont.resume(throwing: NSError(domain: "TestTCP", code: 3, userInfo: [NSLocalizedDescriptionKey: "receive timeout"]))
+                safeResume { cont.resume(throwing: NSError(domain: "TestTCP", code: 3, userInfo: [NSLocalizedDescriptionKey: "receive timeout"])) }
             }
             DispatchQueue.global().asyncAfter(deadline: .now() + interval, execute: deadline)
             conn.receive(minimumIncompleteLength: minIncomplete, maximumLength: maxLength) { data, _, _, error in
                 deadline.cancel()
                 if let error = error {
-                    cont.resume(throwing: error)
+                    safeResume { cont.resume(throwing: error) }
                 } else if let data = data, !data.isEmpty {
-                    cont.resume(returning: data)
+                    safeResume { cont.resume(returning: data) }
                 } else {
-                    cont.resume(throwing: NSError(domain: "TestTCP", code: 4, userInfo: [NSLocalizedDescriptionKey: "no data received"]))
+                    safeResume { cont.resume(throwing: NSError(domain: "TestTCP", code: 4, userInfo: [NSLocalizedDescriptionKey: "no data received"])) }
                 }
             }
         }

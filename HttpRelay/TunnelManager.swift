@@ -68,7 +68,19 @@ final class TunnelManager {
             case .failed(let error):
                 self.cancelConnectionTimeout()
                 print("[TunnelManager] server connection FAILED: \(error)")
-                self.clientConnection?.cancel()
+                // Do NOT cancel the client connection here — ProxyServer's
+                // onError handler is responsible for sending an HTTP error
+                // reply before tearing the client down.
+                DispatchQueue.main.async {
+                    self.logStore.failEntry(self.logEntry)
+                    self.onError?()
+                }
+            case .waiting(let error):
+                // Connection refused (or other transient) often manifests
+                // as .waiting rather than .failed. Treat any non-success
+                // waiting state as a failure.
+                print("[TunnelManager] server connection WAITING with error \(error), treating as failure")
+                self.cancelConnectionTimeout()
                 DispatchQueue.main.async {
                     self.logStore.failEntry(self.logEntry)
                     self.onError?()
@@ -153,7 +165,16 @@ final class TunnelManager {
             case .failed(let error):
                 self.cancelConnectionTimeout()
                 print("[TunnelManager] startAsProxy server FAILED: \(error)")
-                self.clientConnection?.cancel()
+                // Do NOT cancel the client connection here — ProxyServer's
+                // onError handler is responsible for sending an HTTP error
+                // reply before tearing the client down.
+                DispatchQueue.main.async {
+                    self.logStore.failEntry(self.logEntry)
+                    self.onError?()
+                }
+            case .waiting(let error):
+                print("[TunnelManager] startAsProxy server WAITING with error \(error), treating as failure")
+                self.cancelConnectionTimeout()
                 DispatchQueue.main.async {
                     self.logStore.failEntry(self.logEntry)
                     self.onError?()
