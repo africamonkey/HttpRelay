@@ -290,6 +290,7 @@ enum TestSOCKS5 {
                 }
             }
             listener.newConnectionHandler = { connection in
+                connection.start(queue: .global())
                 socks5Server.handle(connection: connection)
             }
             listener.start(queue: .global())

@@ -76,8 +76,13 @@ final class SOCKS5Server {
     /// has already consumed the 0x05 version byte; in that case the next
     /// byte in the buffer is NMETHODS. When `false`, the first receive
     /// will start at the SOCKS5 version byte (legacy / test-only path).
+    ///
+    /// **Caller responsibility**: the connection must already be started
+    /// (`connection.start(queue:)` called once before this method).
+    /// Calling `start` here would trigger
+    /// `nw_connection_set_queue called after nw_connection_start` and
+    /// would set the wrong dispatch queue for the connection.
     func handle(connection: NWConnection, firstByteConsumed: Bool = false) {
-        connection.start(queue: queue)
         if firstByteConsumed {
             receiveMethodsAfterDispatch(connection)
         } else {
