@@ -348,6 +348,8 @@ final class SOCKS5UDPRelay {
     private(set) var listener: NWListener?
     private var outbound: [NWEndpoint: NWConnection] = [:]
     private let outboundLock = NSLock()
+    private var dstToClientUDP: [NWEndpoint: NWEndpoint] = [:]
+    private let reverseLock = NSLock()
 
     /// Idempotent: first call creates the UDP listener on .any port; subsequent
     /// calls return the existing port. Throws if the listener can't be created
@@ -411,6 +413,7 @@ final class SOCKS5UDPRelay {
             return
         }
         let atyp = data[3]
+        let parsed: (endpoint: NWEndpoint, payload: Data)?
         switch atyp {
         case 0x01:
             guard data.count >= 10 else { return }
@@ -423,7 +426,7 @@ final class SOCKS5UDPRelay {
             let payload = data.subdata(in: (portBase + 2)..<data.endIndex)
             let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(ip), port: NWEndpoint.Port(rawValue: port)!)
             print("[SOCKS5UDPRelay] forward \(payload.count) bytes → \(ip):\(port)")
-            self.forward(endpoint: endpoint, payload: payload)
+            parsed = (endpoint, payload)
         case 0x03:
             guard data.count >= 5 else { return }
             let base = data.startIndex
@@ -435,18 +438,27 @@ final class SOCKS5UDPRelay {
             let payload = data.subdata(in: headerEnd..<data.endIndex)
             let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(domain), port: NWEndpoint.Port(rawValue: port)!)
             print("[SOCKS5UDPRelay] forward \(payload.count) bytes → \(domain):\(port)")
-            self.forward(endpoint: endpoint, payload: payload)
+            parsed = (endpoint, payload)
         case 0x04:
             print("[SOCKS5UDPRelay] drop datagram with ATYP=IPv6 (not implemented)")
+            parsed = nil
         default:
             print("[SOCKS5UDPRelay] drop datagram with unknown ATYP=\(atyp)")
+            parsed = nil
+        }
+        guard let (endpoint, payload) = parsed else { return }
+        self.forward(endpoint: endpoint, payload: payload)
+        if let clientUdp = conn.currentPath?.remoteEndpoint {
+            self.reverseLock.lock()
+            self.dstToClientUDP[endpoint] = clientUdp
+            self.reverseLock.unlock()
         }
     }
 
     private func forward(endpoint: NWEndpoint, payload: Data) {
         outboundLock.lock()
         if let existing = outbound[endpoint],
-           existing.state == .ready || existing.state == .preparing {
+           existing.state == .ready || existing.state == .preparing || existing.state == .setup {
             outboundLock.unlock()
             existing.send(content: payload, completion: .contentProcessed { error in
                 if let error = error {
@@ -472,9 +484,20 @@ final class SOCKS5UDPRelay {
                 self.outboundLock.lock()
                 self.outbound.removeValue(forKey: endpoint)
                 self.outboundLock.unlock()
+                self.reverseLock.lock()
+                self.dstToClientUDP.removeValue(forKey: endpoint)
+                self.reverseLock.unlock()
                 conn.cancel()
             }
         }
         conn.start(queue: queue)
+    }
+
+    /// Reverse-lookup the client UDP endpoint for a given real-dst endpoint.
+    /// Returns nil if no mapping exists (e.g., a real dst sent an unsolicited
+    /// packet that was never matched by a SOCKS5 client datagram).
+    func reverseLookup(_ realDst: NWEndpoint) -> NWEndpoint? {
+        reverseLock.lock(); defer { reverseLock.unlock() }
+        return dstToClientUDP[realDst]
     }
 }
