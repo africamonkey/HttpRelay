@@ -141,6 +141,50 @@ struct SOCKS5Tests {
     // and the failure path is exercised by the real-world data flow tests
     // we run against the live app.
 
+    @Test @MainActor func udp_relay_forwards_datagram_to_realTarget() async throws {
+        let echo = try await TestEcho.startUDP()
+        let proxy = try await TestSOCKS5.start()
+        let conn = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
+        conn.start(queue: .global())
+        try await TestTCP.send(conn, Data([0x05, 0x01, 0x00]), timeout: .seconds(2))
+        _ = try await TestTCP.receive(conn, minIncomplete: 2, maxLength: 2, timeout: .seconds(2))
+
+        var req = Data([0x05, 0x03, 0x00, 0x01])
+        req.append(contentsOf: [127, 0, 0, 1])
+        req.append(contentsOf: [0x00, 0x00])
+        try await TestTCP.send(conn, req, timeout: .seconds(2))
+        let reply = try await TestTCP.receive(conn, minIncomplete: 10, maxLength: 10, timeout: .seconds(3))
+        #expect(reply[0] == 0x05 && reply[1] == 0x00)
+        let relayPort = UInt16(reply[8]) << 8 | UInt16(reply[9])
+
+        let clientUDP = try await TestUDPListener.start()
+        defer { Task { await TestUDPListener.stop(clientUDP) } }
+
+        var pkt = Data([0x00, 0x00, 0x00, 0x01])
+        pkt.append(contentsOf: [127, 0, 0, 1])
+        pkt.append(contentsOf: [UInt8(echo.port.rawValue >> 8), UInt8(echo.port.rawValue & 0xff)])
+        let payload: [UInt8] = [0x42, 0x42, 0x42, 0x42]
+        pkt.append(contentsOf: payload)
+
+        try await TestUDPListener.send(clientUDP, pkt, toHost: "127.0.0.1", port: relayPort)
+
+        var received = Data()
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline && received.count < 4 {
+            for await data in echo.recorded {
+                if data.count >= 4 { received = data.prefix(4); break }
+                if Date() >= deadline { break }
+            }
+            if !received.isEmpty { break }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        #expect(received == Data(payload))
+
+        conn.cancel()
+        await echo.stop()
+        await proxy.stop()
+    }
+
     /// Polyglot listener: the same TCP listener must accept both SOCKS5
     /// (first byte 0x05) and HTTP CONNECT (first byte is an ASCII letter)
     /// on the same port. SOCKS5 reply and HTTP reply must both come back.

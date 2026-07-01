@@ -340,11 +340,14 @@ private final class ConnPair {
 }
 
 /// SOCKS5 UDP_ASSOCIATE relay. Holds a single UDP listener shared across
-/// all associations. Datagram handling is a no-op placeholder until Task 6
-/// wires the actual relay loop.
+/// all associations. Parses each incoming datagram as a SOCKS5 UDP header
+/// (RFC 1928 §6) and forwards the payload to the destination over a
+/// reusable outbound UDP `NWConnection`.
 final class SOCKS5UDPRelay {
     private let queue = DispatchQueue(label: "com.httprelay.socks5.udp")
     private(set) var listener: NWListener?
+    private var outbound: [NWEndpoint: NWConnection] = [:]
+    private let outboundLock = NSLock()
 
     /// Idempotent: first call creates the UDP listener on .any port; subsequent
     /// calls return the existing port. Throws if the listener can't be created
@@ -359,7 +362,7 @@ final class SOCKS5UDPRelay {
         }
         l.newConnectionHandler = { [weak self] conn in
             conn.start(queue: self?.queue ?? .global())
-            self?.receiveLoopStub(conn)
+            self?.receiveLoop(conn)
         }
         l.start(queue: queue)
         listener = l
@@ -379,11 +382,99 @@ final class SOCKS5UDPRelay {
     func stop() {
         listener?.cancel()
         listener = nil
+        outboundLock.lock()
+        let conns = Array(outbound.values)
+        outbound.removeAll()
+        outboundLock.unlock()
+        for c in conns { c.cancel() }
     }
 
-    private func receiveLoopStub(_ conn: NWConnection) {
-        conn.receiveMessage { [weak self] _, _, _, _ in
-            self?.receiveLoopStub(conn)
+    private func receiveLoop(_ conn: NWConnection) {
+        conn.receiveMessage { [weak self] data, _, _, error in
+            guard let self = self else { return }
+            if error != nil {
+                return
+            }
+            guard let data = data, !data.isEmpty else {
+                self.receiveLoop(conn)
+                return
+            }
+            self.handleDatagram(from: conn, data: data)
+            self.receiveLoop(conn)
         }
+    }
+
+    private func handleDatagram(from conn: NWConnection, data: Data) {
+        guard data.count >= 4 else { return }
+        guard data[2] == 0x00 else {
+            print("[SOCKS5UDPRelay] drop datagram with FRAG != 0 (\(data[2]))")
+            return
+        }
+        let atyp = data[3]
+        switch atyp {
+        case 0x01:
+            guard data.count >= 10 else { return }
+            let base = data.startIndex
+            let addrBase = base + 4
+            let portBase = addrBase + 4
+            let a0 = data[addrBase], a1 = data[addrBase + 1], a2 = data[addrBase + 2], a3 = data[addrBase + 3]
+            let ip = "\(a0).\(a1).\(a2).\(a3)"
+            let port = UInt16(data[portBase]) << 8 | UInt16(data[portBase + 1])
+            let payload = data.subdata(in: (portBase + 2)..<data.endIndex)
+            let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(ip), port: NWEndpoint.Port(rawValue: port)!)
+            print("[SOCKS5UDPRelay] forward \(payload.count) bytes → \(ip):\(port)")
+            self.forward(endpoint: endpoint, payload: payload)
+        case 0x03:
+            guard data.count >= 5 else { return }
+            let base = data.startIndex
+            let len = Int(data[base + 4])
+            let headerEnd = base + 4 + 1 + len + 2
+            guard data.count >= headerEnd else { return }
+            let domain = String(data: data.subdata(in: (base + 5)..<(base + 5 + len)), encoding: .utf8) ?? ""
+            let port = UInt16(data[base + 5 + len]) << 8 | UInt16(data[base + 5 + len + 1])
+            let payload = data.subdata(in: headerEnd..<data.endIndex)
+            let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(domain), port: NWEndpoint.Port(rawValue: port)!)
+            print("[SOCKS5UDPRelay] forward \(payload.count) bytes → \(domain):\(port)")
+            self.forward(endpoint: endpoint, payload: payload)
+        case 0x04:
+            print("[SOCKS5UDPRelay] drop datagram with ATYP=IPv6 (not implemented)")
+        default:
+            print("[SOCKS5UDPRelay] drop datagram with unknown ATYP=\(atyp)")
+        }
+    }
+
+    private func forward(endpoint: NWEndpoint, payload: Data) {
+        outboundLock.lock()
+        if let existing = outbound[endpoint],
+           existing.state == .ready || existing.state == .preparing {
+            outboundLock.unlock()
+            existing.send(content: payload, completion: .contentProcessed { error in
+                if let error = error {
+                    print("[SOCKS5UDPRelay] send error → \(error)")
+                }
+            })
+            return
+        }
+        let conn = NWConnection(to: endpoint, using: .udp)
+        outbound[endpoint] = conn
+        outboundLock.unlock()
+
+        conn.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            if case .ready = state {
+                conn.send(content: payload, completion: .contentProcessed { error in
+                    if let error = error {
+                        print("[SOCKS5UDPRelay] send error → \(error)")
+                    }
+                })
+            }
+            if case .failed = state {
+                self.outboundLock.lock()
+                self.outbound.removeValue(forKey: endpoint)
+                self.outboundLock.unlock()
+                conn.cancel()
+            }
+        }
+        conn.start(queue: queue)
     }
 }
