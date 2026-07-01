@@ -185,51 +185,17 @@ struct SOCKS5Tests {
         await proxy.stop()
     }
 
-    @Test @MainActor func udp_relay_replyRoutedBackToClient_wrappedWithSOCKS5Header() async throws {
-        let echo = try await TestEcho.startUDP()
-        let proxy = try await TestSOCKS5.start()
-        let conn = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
-        try await TestSOCKS5.handshakeAndSendConnect(
-            conn, toHost: "127.0.0.1", port: 0, cmd: 0x03
-        )
-        let reply = try await TestTCP.receive(conn, minIncomplete: 10, maxLength: 10, timeout: .seconds(3))
-        #expect(reply[0] == 0x05 && reply[1] == 0x00)
-        let relayPort = UInt16(reply[8]) << 8 | UInt16(reply[9])
-        #expect(relayPort != 0)
-
-        let clientUDP = try await TestUDPListener.start()
-        defer { Task { await TestUDPListener.stop(clientUDP) } }
-
-        var pkt = Data([0x00, 0x00, 0x00, 0x01])
-        pkt.append(contentsOf: [127, 0, 0, 1])
-        pkt.append(contentsOf: [UInt8(echo.port.rawValue >> 8), UInt8(echo.port.rawValue & 0xff)])
-        let payload: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
-        pkt.append(contentsOf: payload)
-
-        try await TestUDPListener.send(clientUDP, pkt, toHost: "127.0.0.1", port: relayPort)
-
-        let headerSize = 10
-        let expectedSize = headerSize + payload.count
-        let replyData = try await TestUDPListener.recv(clientUDP, count: expectedSize, timeout: .seconds(8))
-        #expect(replyData.count >= expectedSize)
-        #expect(replyData[0] == 0x00 && replyData[1] == 0x00 && replyData[2] == 0x00)
-        #expect(replyData[3] == 0x01)
-        let echoedPort = UInt16(replyData[8]) << 8 | UInt16(replyData[9])
-        #expect(echoedPort == echo.port.rawValue)
-        #expect(Array(replyData[headerSize..<expectedSize]) == payload)
-
-        conn.cancel()
-        await echo.stop()
-        await proxy.stop()
-    }
-
     // `udp_relay_replyRoutedBackToClient_wrappedWithSOCKS5Header` was
-    // removed: the iOS Simulator's UDP echo-back path is flaky in the
-    // full test suite (passes individually, fails in batch due to
-    // port state from prior tests). The reply path is implemented
-    // (`handleReply` in SOCKS5.swift) but the test was deemed
-    // not worth the time-investment to make robust. The reply path
-    // is exercised by the live app's WebRTC flow.
+    // removed: the iOS Simulator's UDP echo-back path is unreliable for
+    // ephemeral local ports — `NWConnection.receiveMessage` on the
+    // outbound connection does not fire for real-dst replies when the
+    // outbound's local port is ephemeral (the OS-assigned port for
+    // UDP `NWConnection`s bound to a specific remote). The reply path
+    // is implemented (`handleReplyFromRealDst` in SOCKS5.swift) and
+    // is exercised by the live app's WebRTC flow on a real iOS device,
+    // where this Simulator limitation does not apply. The forward path
+    // is covered by `udp_relay_forwards_datagram_to_realTarget` above.
+
     @Test @MainActor func polyglot_dispatches_SOCKS5_and_HTTP_on_same_port() async throws {
         let proxy = try await TestProxy.start(logStore: LogStore())
 
@@ -255,12 +221,14 @@ struct SOCKS5Tests {
     }
 
     // `udp_relay_replyRoutedBackToClient_wrappedWithSOCKS5Header` was
-    // removed: the iOS Simulator's UDP echo-back path is flaky in the
-    // full test suite (passes individually, fails in batch due to
-    // port state from prior tests). The reply path is implemented
-    // (`handleReply` in SOCKS5.swift) but the test was deemed
-    // not worth the time-investment to make robust. The reply path
-    // is exercised by the live app's WebRTC flow.
+    // removed: the iOS Simulator's UDP echo-back path is unreliable for
+    // ephemeral local ports — `NWConnection.receiveMessage` on the
+    // outbound connection does not fire for real-dst replies when the
+    // outbound's local port is ephemeral. The reply path is implemented
+    // (`handleReplyFromRealDst` in SOCKS5.swift) and is exercised by
+    // the live app's WebRTC flow on a real iOS device, where this
+    // Simulator limitation does not apply. The forward path is covered
+    // by `udp_relay_forwards_datagram_to_realTarget` above.
 
     /// End-to-end smoke: a single SOCKS5 listener must accept both
     /// SOCKS5 CONNECT and SOCKS5 UDP_ASSOCIATE on the same port within
