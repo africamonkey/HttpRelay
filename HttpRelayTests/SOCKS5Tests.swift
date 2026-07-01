@@ -112,6 +112,30 @@ struct SOCKS5Tests {
         await proxy.stop()
     }
 
+    @Test @MainActor func udpAssociate_returns_relay_address() async throws {
+        let proxy = try await TestSOCKS5.start()
+        let conn = NWConnection(host: .ipv4(.loopback), port: proxy.port, using: .tcp)
+        conn.start(queue: .global())
+        try await TestTCP.send(conn, Data([0x05, 0x01, 0x00]), timeout: .seconds(2))
+        _ = try await TestTCP.receive(conn, minIncomplete: 2, maxLength: 2, timeout: .seconds(2))
+
+        // Send UDP_ASSOCIATE (CMD=0x03).
+        var req = Data([0x05, 0x03, 0x00, 0x01])  // ver, cmd=udpAssociate, rsv, atyp=ipv4
+        req.append(contentsOf: [127, 0, 0, 1])
+        req.append(contentsOf: [0x00, 0x00])
+        try await TestTCP.send(conn, req, timeout: .seconds(2))
+
+        let reply = try await TestTCP.receive(conn, minIncomplete: 10, maxLength: 10, timeout: .seconds(3))
+        #expect(reply[0] == 0x05)
+        #expect(reply[1] == 0x00)
+        #expect(reply[3] == 0x01)  // BND.ADDR is IPv4
+        let port = UInt16(reply[8]) << 8 | UInt16(reply[9])
+        #expect(port != 0)
+
+        conn.cancel()
+        await proxy.stop()
+    }
+
     // The "connect to unreachable port" test was removed: it's flaky on
     // iOS Simulator (port 1 hangs, port 65000 sometimes refused too fast),
     // and the failure path is exercised by the real-world data flow tests

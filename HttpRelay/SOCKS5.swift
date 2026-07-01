@@ -207,8 +207,25 @@ final class SOCKS5Server {
             let host = self.hostForAddr(request.addr)
             self.handleConnect(connection: connection, host: host, port: request.port)
         case .udpAssociate:
-            print("[SOCKS5] UDP_ASSOCIATE handler not yet implemented (Task 5) — closing")
-            connection.cancel()
+            self.handleUDPAssociate(connection)
+        }
+    }
+
+    private func handleUDPAssociate(_ connection: NWConnection) {
+        do {
+            let relay = udpRelay ?? SOCKS5UDPRelay()
+            if udpRelay == nil { udpRelay = relay }
+            let port = try relay.start()
+            var reply = Data([0x05, 0x00, 0x00, 0x01])
+            reply.append(contentsOf: [0, 0, 0, 0])
+            reply.append(contentsOf: [UInt8(port.rawValue >> 8), UInt8(port.rawValue & 0xff)])
+            print("[SOCKS5] UDP_ASSOCIATE → relay port \(port.rawValue)")
+            connection.send(content: reply, completion: .contentProcessed { error in
+                if error != nil { connection.cancel(); return }
+            })
+        } catch {
+            connection.send(content: SOCKS5Parser.makeReply(status: 0x01, bind: nil),
+                           completion: .contentProcessed { _ in connection.cancel() })
         }
     }
 
@@ -322,8 +339,51 @@ private final class ConnPair {
     func closeBoth() { closeClient(); closeServer() }
 }
 
-/// Will be filled in by Tasks 5/6/7. Stub here so the file compiles.
+/// SOCKS5 UDP_ASSOCIATE relay. Holds a single UDP listener shared across
+/// all associations. Datagram handling is a no-op placeholder until Task 6
+/// wires the actual relay loop.
 final class SOCKS5UDPRelay {
+    private let queue = DispatchQueue(label: "com.httprelay.socks5.udp")
+    private(set) var listener: NWListener?
+
+    /// Idempotent: first call creates the UDP listener on .any port; subsequent
+    /// calls return the existing port. Throws if the listener can't be created
+    /// (e.g., permission denied) or fails to reach .ready within 5 seconds.
+    func start() throws -> NWEndpoint.Port {
+        if let port = listener?.port { return port }
+        let l = try NWListener(using: .udp, on: .any)
+
+        let ready = DispatchSemaphore(value: 0)
+        l.stateUpdateHandler = { state in
+            if state == .ready { ready.signal() }
+        }
+        l.newConnectionHandler = { [weak self] conn in
+            conn.start(queue: self?.queue ?? .global())
+            self?.receiveLoopStub(conn)
+        }
+        l.start(queue: queue)
+        listener = l
+
+        guard ready.wait(timeout: .now() + 5.0) == .success else {
+            l.cancel()
+            listener = nil
+            throw NSError(domain: "SOCKS5UDPRelay", code: -2, userInfo: [NSLocalizedDescriptionKey: "listener did not become ready"])
+        }
+        guard let port = l.port else {
+            throw NSError(domain: "SOCKS5UDPRelay", code: -1, userInfo: [NSLocalizedDescriptionKey: "no port after ready"])
+        }
+        print("[SOCKS5UDPRelay] listening on UDP port \(port.rawValue)")
+        return port
+    }
+
     func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+
+    private func receiveLoopStub(_ conn: NWConnection) {
+        conn.receiveMessage { [weak self] _, _, _, _ in
+            self?.receiveLoopStub(conn)
+        }
     }
 }
