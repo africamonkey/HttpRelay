@@ -228,7 +228,7 @@ final class SOCKS5Server {
 
     private func handleUDPAssociate(_ connection: NWConnection) {
         do {
-            let relay = udpRelay ?? SOCKS5UDPRelay()
+            let relay = udpRelay ?? SOCKS5UDPRelay(logStore: logStore)
             if udpRelay == nil { udpRelay = relay }
             let port = try relay.start()
             var reply = Data([0x05, 0x00, 0x00, 0x01])
@@ -296,8 +296,10 @@ final class SOCKS5Server {
             guard let data = data, !data.isEmpty else {
                 self.clientToServer(pair: pair); return
             }
+            let count = data.count
             pair.server.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
                 if error != nil { pair.closeBoth(); return }
+                Task { @MainActor in self.logStore.addTxBytes(count) }
                 if isComplete { return }
                 self.clientToServer(pair: pair)
             })
@@ -313,8 +315,10 @@ final class SOCKS5Server {
             guard let data = data, !data.isEmpty else {
                 self.serverToClient(pair: pair); return
             }
+            let count = data.count
             pair.client.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
                 if error != nil { pair.closeBoth(); return }
+                Task { @MainActor in self.logStore.addRxBytes(count) }
                 if isComplete { return }
                 self.serverToClient(pair: pair)
             })
@@ -364,6 +368,7 @@ private final class ConnPair {
 /// (RFC 1928 §6) and forwards the payload to the destination over a
 /// reusable outbound UDP `NWConnection`.
 final class SOCKS5UDPRelay {
+    private let logStore: LogStore
     private let queue = DispatchQueue(label: "com.httprelay.socks5.udp")
     private(set) var listener: NWListener?
     private var outbound: [NWEndpoint: NWConnection] = [:]
@@ -372,6 +377,10 @@ final class SOCKS5UDPRelay {
     private let clientLock = NSLock()
     private var dstToClientUDP: [NWEndpoint: NWEndpoint] = [:]
     private let reverseLock = NSLock()
+
+    init(logStore: LogStore) {
+        self.logStore = logStore
+    }
 
     /// Idempotent: first call creates the UDP listener on .any port; subsequent
     /// calls return the existing port. Throws if the listener can't be created
@@ -490,12 +499,15 @@ final class SOCKS5UDPRelay {
     }
 
     private func forward(endpoint: NWEndpoint, payload: Data) {
+        let count = payload.count
         outboundLock.lock()
         if let existing = outbound[endpoint] {
             outboundLock.unlock()
-            existing.send(content: payload, completion: .contentProcessed { error in
+            existing.send(content: payload, completion: .contentProcessed { [weak self] error in
                 if let error = error {
                     print("[SOCKS5UDPRelay] send error → \(error)")
+                } else {
+                    Task { @MainActor in self?.logStore.addTxBytes(count) }
                 }
             })
             return
@@ -514,7 +526,7 @@ final class SOCKS5UDPRelay {
                     if let error = error {
                         print("[SOCKS5UDPRelay] send error → \(error)")
                     } else {
-                        print("[SOCKS5UDPRelay] sent \(payload.count) bytes → \(endpoint)")
+                        Task { @MainActor in self.logStore.addTxBytes(count) }
                     }
                 })
             }
@@ -540,6 +552,7 @@ final class SOCKS5UDPRelay {
             }
             if let data = data, !data.isEmpty {
                 print("[SOCKS5UDPRelay] outbound got \(data.count) bytes from \(endpoint)")
+                Task { @MainActor in self.logStore.addRxBytes(data.count) }
                 self.handleReplyFromRealDst(endpoint: endpoint, data: data)
             }
             self.startReceiveOnOutbound(conn, endpoint: endpoint)
