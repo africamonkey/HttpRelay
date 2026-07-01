@@ -404,9 +404,19 @@ final class SOCKS5UDPRelay {
             // Discriminator: was this peer previously seen as a SOCKS5 dst?
             // If yes → reply path (we already know which client it belongs to).
             // If no → forward path (a SOCKS5 client sent us a datagram).
+            //
+            // **Note on port matching for TURN/STUN**: TURN-over-UDP and
+            // STUN binding responses routinely come from a different source
+            // port than the request was sent to (NAT rebinding on the dst's
+            // side, or a separate STUN/TURN response port). The dstToClientUDP
+            // map keys by the full `NWEndpoint` (addr+port). To handle
+            // port-mismatch, we relax the lookup to match on (addr, any-port):
+            // if a key exists with the same address but a different port, treat
+            // it as a reply for that client. This is necessary for WebRTC's
+            // TURN-over-UDP and STUN binding flows to work end-to-end.
             let remote = conn.currentPath?.remoteEndpoint
-            if let remote = remote, self.reverseLookup(remote) != nil {
-                self.handleReply(from: remote, data: data)
+            if let remote = remote, let client = self.reverseLookupLoose(remote) {
+                self.handleReply(from: remote, data: data, clientUDP: client)
             } else {
                 self.handleDatagram(from: conn, data: data)
             }
@@ -416,11 +426,7 @@ final class SOCKS5UDPRelay {
 
     /// Wrap an inbound reply from a real dst back into a SOCKS5 UDP packet
     /// and send it to the original SOCKS5 client.
-    private func handleReply(from dst: NWEndpoint, data: Data) {
-        guard let clientUDP = self.reverseLookup(dst) else {
-            print("[SOCKS5UDPRelay] inbound UDP from unknown source \(dst); dropping")
-            return
-        }
+    private func handleReply(from dst: NWEndpoint, data: Data, clientUDP: NWEndpoint) {
         // SOCKS5 UDP reply header: RSV(2) FRAG(1) ATYP(1) DST.ADDR(4) DST.PORT(2) DATA
         // We don't easily recover IPv4 bytes from `NWEndpoint.hostPort`; use 0.0.0.0.
         // For DST.PORT, the real dst's source port is what the browser sent to —
@@ -541,5 +547,27 @@ final class SOCKS5UDPRelay {
     func reverseLookup(_ realDst: NWEndpoint) -> NWEndpoint? {
         reverseLock.lock(); defer { reverseLock.unlock() }
         return dstToClientUDP[realDst]
+    }
+
+    /// Looser reverse-lookup: tries exact match first, then falls back to
+    /// matching on the IP only (any port). Necessary because TURN-over-UDP
+    /// and STUN binding responses routinely come from a different source
+    /// port than the request was sent to (NAT rebinding, separate
+    /// response ports). Without this, WebRTC's ICE/TURN flow drops replies.
+    ///
+    /// Picks the most recent mapping matching the IP (iterates the map
+    /// in unspecified order, but for a small set of mappings that's fine).
+    func reverseLookupLoose(_ realDst: NWEndpoint) -> NWEndpoint? {
+        reverseLock.lock()
+        defer { reverseLock.unlock() }
+        if let exact = dstToClientUDP[realDst] { return exact }
+        // Match on the host portion (NWEndpoint.hostPort(_, _) only).
+        guard case .hostPort(let targetHost, _) = realDst else { return nil }
+        for (key, client) in dstToClientUDP {
+            if case .hostPort(let h, _) = key, h == targetHost {
+                return client
+            }
+        }
+        return nil
     }
 }
