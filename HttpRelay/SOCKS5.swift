@@ -168,13 +168,122 @@ final class SOCKS5Server {
             connection.send(content: SOCKS5Parser.makeReply(status: 0x07),
                            completion: .contentProcessed { _ in connection.cancel() })
         case .connect:
-            print("[SOCKS5] CONNECT handler not yet implemented (Task 3) — closing")
-            connection.cancel()
+            let host = self.hostForAddr(request.addr)
+            self.handleConnect(connection: connection, host: host, port: request.port)
         case .udpAssociate:
             print("[SOCKS5] UDP_ASSOCIATE handler not yet implemented (Task 5) — closing")
             connection.cancel()
         }
     }
+
+    private func hostForAddr(_ addr: SOCKS5Request.Address) -> String {
+        switch addr {
+        case .ipv4(let b): return "\(b[0]).\(b[1]).\(b[2]).\(b[3])"
+        case .ipv6: return ""
+        case .domain(let s): return s
+        }
+    }
+
+    private func handleConnect(connection: NWConnection, host: String, port: UInt16) {
+        let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!)
+        let dst = NWConnection(to: endpoint, using: .tcp)
+        let pair = ConnPair(client: connection, server: dst)
+
+        dst.stateUpdateHandler = { [weak self] state in
+            guard let self = self else { return }
+            switch state {
+            case .ready:
+                print("[SOCKS5] CONNECT \(host):\(port) ready")
+                connection.send(content: SOCKS5Parser.makeReply(status: 0x00, bind: nil),
+                               completion: .contentProcessed { error in
+                    if error != nil { pair.closeBoth(); return }
+                    self.clientToServer(pair: pair)
+                    self.serverToClient(pair: pair)
+                })
+            case .failed, .cancelled:
+                print("[SOCKS5] CONNECT \(host):\(port) failed/cancelled")
+                if !pair.clientClosed {
+                    connection.send(content: SOCKS5Parser.makeReply(status: 0x01, bind: nil),
+                                   completion: .contentProcessed { _ in pair.closeBoth() })
+                } else {
+                    pair.closeServer()
+                }
+            default: break
+            }
+        }
+        dst.start(queue: queue)
+    }
+
+    private func clientToServer(pair: ConnPair) {
+        pair.client.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            if error != nil || isComplete {
+                pair.server.cancel(); return
+            }
+            guard let data = data, !data.isEmpty else {
+                self.clientToServer(pair: pair); return
+            }
+            pair.server.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
+                if error != nil { pair.closeBoth(); return }
+                if isComplete { return }
+                self.clientToServer(pair: pair)
+            })
+        }
+    }
+
+    private func serverToClient(pair: ConnPair) {
+        pair.server.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            guard let self = self else { return }
+            if error != nil || isComplete {
+                pair.client.cancel(); return
+            }
+            guard let data = data, !data.isEmpty else {
+                self.serverToClient(pair: pair); return
+            }
+            pair.client.send(content: data, isComplete: isComplete, completion: .contentProcessed { error in
+                if error != nil { pair.closeBoth(); return }
+                if isComplete { return }
+                self.serverToClient(pair: pair)
+            })
+        }
+    }
+}
+
+/// Lifecycle helper for an SOCKS5 CONNECT tunnel. Tracks which side has
+/// already closed so we don't double-cancel and avoid races between
+/// `stateUpdateHandler` and the receive callbacks.
+private final class ConnPair {
+    let client: NWConnection
+    let server: NWConnection
+    private let lock = NSLock()
+    private var clientDone = false
+    private var serverDone = false
+
+    var clientClosed: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return clientDone
+    }
+
+    init(client: NWConnection, server: NWConnection) {
+        self.client = client
+        self.server = server
+    }
+
+    func closeClient() {
+        lock.lock(); defer { lock.unlock() }
+        guard !clientDone else { return }
+        clientDone = true
+        client.cancel()
+    }
+
+    func closeServer() {
+        lock.lock(); defer { lock.unlock() }
+        guard !serverDone else { return }
+        serverDone = true
+        server.cancel()
+    }
+
+    func closeBoth() { closeClient(); closeServer() }
 }
 
 /// Will be filled in by Tasks 5/6/7. Stub here so the file compiles.
