@@ -401,9 +401,51 @@ final class SOCKS5UDPRelay {
                 self.receiveLoop(conn)
                 return
             }
-            self.handleDatagram(from: conn, data: data)
+            // Discriminator: was this peer previously seen as a SOCKS5 dst?
+            // If yes → reply path (we already know which client it belongs to).
+            // If no → forward path (a SOCKS5 client sent us a datagram).
+            let remote = conn.currentPath?.remoteEndpoint
+            if let remote = remote, self.reverseLookup(remote) != nil {
+                self.handleReply(from: remote, data: data)
+            } else {
+                self.handleDatagram(from: conn, data: data)
+            }
             self.receiveLoop(conn)
         }
+    }
+
+    /// Wrap an inbound reply from a real dst back into a SOCKS5 UDP packet
+    /// and send it to the original SOCKS5 client.
+    private func handleReply(from dst: NWEndpoint, data: Data) {
+        guard let clientUDP = self.reverseLookup(dst) else {
+            print("[SOCKS5UDPRelay] inbound UDP from unknown source \(dst); dropping")
+            return
+        }
+        // SOCKS5 UDP reply header: RSV(2) FRAG(1) ATYP(1) DST.ADDR(4) DST.PORT(2) DATA
+        // We don't easily recover IPv4 bytes from `NWEndpoint.hostPort`; use 0.0.0.0.
+        // For DST.PORT, the real dst's source port is what the browser sent to —
+        // this is what a normal SOCKS5 server would put here.
+        let port: UInt16
+        if case .hostPort(_, let p) = dst { port = p.rawValue } else { port = 0 }
+
+        var reply = Data([0x00, 0x00, 0x00, 0x01])
+        reply.append(contentsOf: [0, 0, 0, 0])
+        reply.append(contentsOf: [UInt8(port >> 8), UInt8(port & 0xff)])
+        reply.append(data)
+        print("[SOCKS5UDPRelay] reply \(data.count) bytes from port \(port) → client \(clientUDP)")
+
+        let clientConn = NWConnection(to: clientUDP, using: .udp)
+        clientConn.stateUpdateHandler = { state in
+            if case .ready = state {
+                clientConn.send(content: reply, completion: .contentProcessed { _ in
+                    clientConn.cancel()
+                })
+            }
+            if case .failed = state {
+                clientConn.cancel()
+            }
+        }
+        clientConn.start(queue: queue)
     }
 
     private func handleDatagram(from conn: NWConnection, data: Data) {
@@ -471,12 +513,9 @@ final class SOCKS5UDPRelay {
         outbound[endpoint] = conn
         outboundLock.unlock()
 
-        var didSend = false
-        let replies = AsyncStream<Data>.makeStream()
         conn.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
-            if case .ready = state, !didSend {
-                didSend = true
+            if case .ready = state {
                 conn.send(content: payload, completion: .contentProcessed { error in
                     if let error = error {
                         print("[SOCKS5UDPRelay] send error → \(error)")
@@ -493,52 +532,7 @@ final class SOCKS5UDPRelay {
                 conn.cancel()
             }
         }
-        // Set up receive on the queue (similar to the basic UDP test pattern).
-        self.queue.async {
-            conn.receiveMessage { data, _, _, error in
-                if let data = data, !data.isEmpty {
-                    replies.continuation.yield(data)
-                }
-            }
-        }
         conn.start(queue: queue)
-        // Wait for replies and dispatch.
-        Task { [weak self] in
-            for await data in replies.stream {
-                await self?.handleOutboundReply(endpoint: endpoint, data: data)
-                break
-            }
-        }
-    }
-
-    private func handleOutboundReply(endpoint: NWEndpoint, data: Data) async {
-        self.reverseLock.lock()
-        let clientUDP = self.dstToClientUDP[endpoint]
-        self.reverseLock.unlock()
-        guard let clientUDP = clientUDP else {
-            print("[SOCKS5UDPRelay] inbound reply for unknown endpoint \(endpoint); dropping")
-            return
-        }
-        let port: UInt16
-        if case .hostPort(_, let p) = endpoint { port = p.rawValue } else { port = 0 }
-        var reply = Data([0x00, 0x00, 0x00, 0x01])
-        reply.append(contentsOf: [0, 0, 0, 0])
-        reply.append(contentsOf: [UInt8(port >> 8), UInt8(port & 0xff)])
-        reply.append(data)
-        print("[SOCKS5UDPRelay] reply \(data.count) bytes from \(endpoint) → client \(clientUDP)")
-
-        let clientConn = NWConnection(to: clientUDP, using: .udp)
-        clientConn.stateUpdateHandler = { state in
-            if case .ready = state {
-                clientConn.send(content: reply, completion: .contentProcessed { _ in
-                    clientConn.cancel()
-                })
-            }
-            if case .failed = state {
-                clientConn.cancel()
-            }
-        }
-        clientConn.start(queue: queue)
     }
 
     /// Reverse-lookup the client UDP endpoint for a given real-dst endpoint.
