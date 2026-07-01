@@ -66,9 +66,19 @@ final class SOCKS5Server {
     private let logStore: LogStore
     private let queue = DispatchQueue(label: "com.httprelay.socks5")
     private var udpRelay: SOCKS5UDPRelay?
+    private var localIP: String = "0.0.0.0"
 
     init(logStore: LogStore) {
         self.logStore = logStore
+    }
+
+    /// Set the device's LAN IP. This is used as `BND.ADDR` in the
+    /// UDP_ASSOCIATE reply (RFC 1928 §6) — the address where the
+    /// SOCKS5 client must send UDP datagrams. Using `0.0.0.0` here
+    /// causes strict clients (Firefox, Chrome) to immediately abort
+    /// ICE because they have nowhere valid to send UDP.
+    func setLocalIP(_ ip: String) {
+        self.localIP = ip
     }
 
     /// Called by ProxyServer (or by TestSOCKS5) when a new connection arrives.
@@ -222,9 +232,14 @@ final class SOCKS5Server {
             if udpRelay == nil { udpRelay = relay }
             let port = try relay.start()
             var reply = Data([0x05, 0x00, 0x00, 0x01])
-            reply.append(contentsOf: [0, 0, 0, 0])
+            let parts = localIP.split(separator: ".").compactMap { UInt8($0) }
+            if parts.count == 4 {
+                reply.append(contentsOf: parts)
+            } else {
+                reply.append(contentsOf: [0, 0, 0, 0])
+            }
             reply.append(contentsOf: [UInt8(port.rawValue >> 8), UInt8(port.rawValue & 0xff)])
-            print("[SOCKS5] UDP_ASSOCIATE → relay port \(port.rawValue)")
+            print("[SOCKS5] UDP_ASSOCIATE → \(localIP):\(port.rawValue)")
             connection.send(content: reply, completion: .contentProcessed { error in
                 if error != nil { connection.cancel(); return }
             })

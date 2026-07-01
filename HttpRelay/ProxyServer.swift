@@ -59,6 +59,7 @@ final class ProxyServer {
                 print("[ProxyServer] listening on port \(self.port)")
                 self.localIP = self.getLocalIPAddress() ?? "—"
                 print("[ProxyServer] local IP: \(self.localIP)")
+                self.socks5Server.setLocalIP(self.localIP)
                 self.onLocalIPReady?(self.localIP)
             case .failed(let error):
                 print("[ProxyServer] failed: \(error)")
