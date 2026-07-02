@@ -60,7 +60,7 @@ struct MacTutorialView: View {
                 TutorialImage(name: "tutorial_mac_3")
                     .frame(maxWidth: .infinity)
 
-                StepRow(number: 4, title: "Configure Proxy", description: "Select \"Proxies\" in the side bar, scroll down to \"HTTP Proxy\" and \"HTTPS proxy\" section:\n• Enter your iOS device IP address \(localIP)\n• Enter port \(port)")
+                StepRow(number: 4, title: "Configure Proxy", description: "Select \"Proxies\" in the side bar, scroll down to \"HTTP Proxy\" and \"HTTPS proxy\" section:\n• Enter your iOS device IP address \(localIP)\n• Enter port \(port)\n\nSOCKS5 proxy is also supported on the same port \(port).")
                 
                 ProxyInfoBox(ip: localIP, port: port)
                 
@@ -101,7 +101,7 @@ struct WindowsTutorialView: View {
                 TutorialImage(name: "tutorial_windows_3")
                     .frame(maxWidth: .infinity)
 
-                StepRow(number: 4, title: "Configure Manual Proxy", description: "Under \"Edit proxy server\":\n• Toggle \"ON\"\n• Enter your iOS device IP address \(localIP)\n• Enter port \(port).")
+                StepRow(number: 4, title: "Configure Manual Proxy", description: "Under \"Edit proxy server\":\n• Toggle \"ON\"\n• Enter your iOS device IP address \(localIP)\n• Enter port \(port).\n\nSOCKS5 proxy is also supported on the same port \(port).")
                 ProxyInfoBox(ip: localIP, port: port)
                 TutorialImage(name: "tutorial_windows_4")
                     .frame(maxWidth: .infinity)
