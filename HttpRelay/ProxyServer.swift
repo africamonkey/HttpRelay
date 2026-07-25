@@ -29,21 +29,34 @@ final class ProxyServer {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
         defer { freeifaddrs(ifaddr) }
+
+        var addresses: [String: String] = [:]
+
         for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
             let interface = ptr.pointee
             let addrFamily = interface.ifa_addr.pointee.sa_family
             if addrFamily == UInt8(AF_INET) {
                 let name = String(cString: interface.ifa_name)
-                if name == "en0" || name == "en1" {
-                    var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                    getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
-                               &hostname, socklen_t(hostname.count),
-                               nil, socklen_t(0), NI_NUMERICHOST)
-                    address = String(cString: hostname)
-                }
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                           &hostname, socklen_t(hostname.count),
+                           nil, socklen_t(0), NI_NUMERICHOST)
+                addresses[name] = String(cString: hostname)
             }
         }
-        return address
+
+        // Priority: bridge interfaces (Hotspot), en0 (WiFi), en1...
+        if let bridgeKey = addresses.keys.first(where: { $0.hasPrefix("bridge") }), let ip = addresses[bridgeKey] {
+            return ip
+        } else if let ip = addresses["en0"] {
+            return ip
+        } else if let ip = addresses["en1"] {
+            return ip
+        } else if let enKey = addresses.keys.first(where: { $0.hasPrefix("en") }), let ip = addresses[enKey] {
+            return ip
+        }
+
+        return nil
     }
 
     func start() throws {
