@@ -3,7 +3,7 @@ import UIKit
 
 struct ContentView: View {
     @State private var isRunning = false
-    @State private var logStore = LogStore()
+    @StateObject private var logStore = LogStore()
     @State private var proxyServer: ProxyServer?
     @State private var connectionCount: Int = 0
     @State private var errorMessage: String?
@@ -160,13 +160,13 @@ struct ContentView: View {
                     }
                 }
             }
-            .onChange(of: logStore.entries.count) { _, _ in
+            .onChange(of: logStore.entries.count) { _ in
                 connectionCount = logStore.activeConnections
             }
-            .onChange(of: logStore.totalTxBytes) { _, newValue in
+            .onChange(of: logStore.totalTxBytes) { newValue in
                 txBytes = newValue
             }
-            .onChange(of: logStore.totalRxBytes) { _, newValue in
+            .onChange(of: logStore.totalRxBytes) { newValue in
                 rxBytes = newValue
             }
             .alert("Error", isPresented: Binding(
@@ -300,7 +300,7 @@ struct FilterChip: View {
 
 struct LogRowView: View {
     let entryId: UUID
-    let logStore: LogStore
+    @ObservedObject var logStore: LogStore
 
     private var entry: LogEntry? {
         logStore.entries.first(where: { $0.id == entryId })

@@ -60,7 +60,7 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
 
 #### 3. LogStore.swift
 - **Purpose**: Central state management for logs and statistics
-- **Annotations**: `@Observable`, `@MainActor` (thread-safe)
+- **Annotations**: `ObservableObject` with `@Published` properties, `@MainActor` (thread-safe). NOTE: deployment target is iOS 16.0 — do NOT use `@Observable`/Observation framework or the two-parameter `onChange(of:initial:_:)` (both iOS 17+)
 - **Key Properties**:
   - `entries: [LogEntry]` - limited to 100 entries
   - `activeConnections: Int` - current connection count
@@ -172,7 +172,7 @@ HttpRelay/
 ├── ContentView.swift       # Main UI (SwiftUI)
 ├── ProxyServer.swift        # HTTP CONNECT proxy server (Network framework)
 ├── TunnelManager.swift      # Connection bridging
-├── LogStore.swift           # State management (@Observable)
+├── LogStore.swift           # State management (ObservableObject + @Published)
 ├── LogEntry.swift           # Data model
 ├── Info.plist
 └── ...test files

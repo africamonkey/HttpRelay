@@ -1,18 +1,17 @@
 import Foundation
-import Observation
+import Combine
 import SwiftUI
 
-@Observable
 @MainActor
-final class LogStore {
-    private(set) var entries: [LogEntry] = []
-    private(set) var activeConnections: Int = 0
-    private(set) var totalTxBytes: Int64 = 0
-    private(set) var totalRxBytes: Int64 = 0
+final class LogStore: ObservableObject {
+    @Published private(set) var entries: [LogEntry] = []
+    @Published private(set) var activeConnections: Int = 0
+    @Published private(set) var totalTxBytes: Int64 = 0
+    @Published private(set) var totalRxBytes: Int64 = 0
 
-    var searchText: String = ""
-    var selectedMethods: Set<LogEntry.HTTPMethod> = []
-    var selectedStatusFilters: Set<String> = []
+    @Published var searchText: String = ""
+    @Published var selectedMethods: Set<LogEntry.HTTPMethod> = []
+    @Published var selectedStatusFilters: Set<String> = []
 
     var filteredEntries: [LogEntry] {
         entries.filter { entry in
