@@ -19,7 +19,7 @@ iOS 唯一允许"长时间后台运行任意任务"的合法模式之一是 `UIB
 - 后台播放音频本身需要、也合法化 `UIBackgroundModes: audio` 的存在。
 
 把后台播放包装成一个对用户有语义的产品功能 —— **"后台心跳提示音"**：
-- 心跳开启时：每 3 秒发出一声极轻的"滴答"音（约 20ms 短脉冲，振幅 ~0.1），
+- 心跳开启时：每 3 秒发出一声极轻的"滴答"音（约 20ms 短脉冲、500Hz、淡入淡出），
   形似 iOS 后台录音的指示条，告知用户"代理仍在后台工作"。
 - 心跳关闭时：UI 状态区显示 "心跳：关闭"，此时仅前台保持，锁屏后将挂起。
 
@@ -27,6 +27,15 @@ iOS 唯一允许"长时间后台运行任意任务"的合法模式之一是 `UIB
 静音 PCM 在 iOS 后台保活层面"技术上有效"，但 App Review 规则明确要求
 `UIBackgroundModes: audio` 必须有用户可感知的音频内容。纯静音是经典的 abuse pattern，
 会被标记为 misuse 并拒绝上架。本设计用真实可听的滴答音，让该后台模式有正当的产品理由。
+
+**关键原则：后台保活与音量解耦**
+Apple 的后台保活判定看的是 `AVAudioSession` 是否 active + `AVAudioEngine` 是否在跑，
+不直接看输出音量。本设计把"音量"实现为 `mainMixer.outputVolume`：
+- buffer 样本振幅始终固定为 1.0，保证 audio render thread 持续渲染真实样本。
+- 用户配置的音量（0.0 - 1.0，默认 0.3）写入 `mainMixer.outputVolume`。
+- **即使 `outputVolume = 0`，engine 仍持续运行、session 仍 active、render thread 仍在 tick，**
+  iOS 仍判定 app 在后台播放音频 — 后台保活有效。
+- 用户拖到 0% 听到的是静音，但代理仍保持后台连接。这是产品体验的关键保证。
 
 ## 范围
 
@@ -61,26 +70,26 @@ final class AudioHeartbeat {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var timer: DispatchSourceTimer?
-    private var volume: Float = 0.3   // 默认 30%
+    private var buffer: AVAudioPCMBuffer?       // 振幅固定为 1.0 的正弦脉冲
 
     func start() throws                              // 配置 session、激活、起 engine、起 timer
     func stop()                                      // 停 timer、停 player、停 engine、反激活 session
-    func updateVolume(_ value: Float)                // 重新合成 buffer，下一拍生效
+    func updateVolume(_ value: Float)                // 设置 mainMixer.outputVolume，立即生效
 }
 ```
 
 - **滴答音合成**：用一个 100ms 的 `AVAudioPCMBuffer`（单声道、44.1kHz、Float32），
-  在前 20ms 写入一个 500Hz 正弦波（带 5ms 淡入淡出），振幅为**用户配置的音量**（默认 0.3）；
-  其余样本为 0。
+  在前 20ms 写入一个 500Hz 正弦波（带 5ms 淡入淡出），**振幅固定为 1.0**；其余样本为 0。
+  buffer 在 start 时合成一次，不再变化。
 - **调度方式**：每次 timer 触发时 `player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)`，
   然后 `player.play()`；播放完毕后 player 自然停在 idle。
 - **周期**：`DispatchSourceTimer`，每 3 秒触发一次。
-- **音量实现**：buffer 内的正弦波振幅按 `UserDefaults.standard.double(forKey: "heartbeatVolume")` 写入；
-  `mainMixer.outputVolume = 1.0`（保留样本内的真实振幅），用户系统音量自然控制最终响度。
+- **音量实现**：用户音量写入 `engine.mainMixer.outputVolume`（0.0 - 1.0，默认 0.3）。
+  这是**纯输出音量控制**，不影响 engine / session 状态，因此音量 = 0% 仍保活。
 - **运行时调音量**：用户在 SettingsView 拖动 Slider → 写入 `UserDefaults` →
-  `AudioHeartbeat.shared.updateVolume(newValue)` → 重新合成并替换 buffer（下一拍生效）。
+  `AudioHeartbeat.shared.updateVolume(newValue)` → 设置 `mainMixer.outputVolume`，下一拍生效。
 - **中断恢复**：监听 `AVAudioSession.interruptionNotification`，中断结束后若仍处于 `isRunning`
-  状态，重新 `engine.start()` 并恢复 timer。
+  状态，重新 `engine.start()` 并恢复 timer；`mainMixer.outputVolume` 保留。
 - **节流**：player 仅在 scheduleBuffer 之后短暂 play，避免持续占用 audio render thread。
 
 ### `ProxyServer` 改动
@@ -133,7 +142,7 @@ Section {
 } header: {
     Text("后台心跳")
 } footer: {
-    Text("锁屏后代理保持连接时会播放此音量的提示音。设为 0% 可静音。")
+    Text("锁屏后代理保持连接时会播放此音量的提示音。设为 0% 后听到静音，但后台连接仍保持。")
 }
 ```
 
@@ -193,7 +202,8 @@ AVAudioSession.interruptionNotification (ended)
 | 心跳启动但 proxy 未启动 | 不会出现：心跳仅在 proxy start 内被调用 |
 | 用户在 proxy 运行中关闭心跳 toggle | 立即 `AudioHeartbeat.shared.stop()`；proxy 继续运行，但锁屏后会被挂起 |
 | 用户在 proxy 运行中开启心跳 toggle | 立即 `AudioHeartbeat.shared.start()` |
-| 用户在 SettingsView 拖动音量 Slider | `AudioHeartbeat.shared.updateVolume()`，下一拍滴答生效；proxy 未运行时仅持久化 |
+| 用户在 SettingsView 拖动音量 Slider | `AudioHeartbeat.shared.updateVolume()` → `mainMixer.outputVolume` 立即生效；proxy 未运行时仅持久化 |
+| 用户把音量拖到 0% | 输出静音，**但 engine 仍运行、session 仍 active，后台保活继续有效** |
 
 ## Info.plist 改动
 
@@ -249,6 +259,12 @@ xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay \
    - 把音量拖到 100% → 预期：滴答音明显可听
    - 把音量拖到 30%（默认）→ 预期：能听到但不影响日常
 
+4. **音量 0% 仍保活（关键）**
+   - 启动 proxy → 进入 Settings → 把音量拖到 0% → 锁屏 → 等待 60s → 回到 HttpRelay
+   - 从 Windows 侧发起新 HTTPS 请求
+   - 预期：日志新增一行 `connected`，TX/RX 计数器递增
+   - 此条覆盖整个设计的核心保证：**静音 ≠ 停止后台运行**
+
 3. **心跳启动失败的降级路径**
    - 模拟音频会话被其他 App 占用、`setActive` 抛错的场景（如有 `am instrument` 工具可用）
    - 预期：日志出现 `error` 条目，但 proxy 仍能在前台正常工作；UI 显示"心跳：关闭"
@@ -284,7 +300,8 @@ xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay \
   这段描述是把 audio 后台模式"合理化"的关键。
 
 - **电量 / 用户体验**：周期性滴答音每 3s 一次，每次 20ms，对电量影响极小；
-  音量由用户系统音量控制；用户可从 UI 看到"心跳：开启"状态并预期到声音存在。
+  音量由用户 Slider 控制（0.0 - 1.0，默认 0.3），同时受 iOS 系统音量影响；
+  **音量调至 0 仍保活**，用户可静音但不必牺牲后台连接。
 
 - **macCatalyst / iPad 行为差异**：Apple Silicon iPad 上后台行为类似，但若用户使用多任务分屏
   心跳被切到非激活窗口时，iPadOS 不会立刻挂起，行为稳定。
