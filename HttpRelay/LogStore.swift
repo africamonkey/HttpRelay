@@ -9,12 +9,26 @@ final class LogStore: ObservableObject {
     @Published private(set) var totalTxBytes: Int64 = 0
     @Published private(set) var totalRxBytes: Int64 = 0
 
-    @Published var searchText: String = ""
-    @Published var selectedMethods: Set<LogEntry.HTTPMethod> = []
-    @Published var selectedStatusFilters: Set<String> = []
+    @Published private(set) var searchText: String = "" {
+        didSet { if searchText != oldValue { recomputeFilteredEntries() } }
+    }
+    @Published private(set) var selectedMethods: Set<LogEntry.HTTPMethod> = [] {
+        didSet { if selectedMethods != oldValue { recomputeFilteredEntries() } }
+    }
+    @Published private(set) var selectedStatusFilters: Set<String> = [] {
+        didSet { if selectedStatusFilters != oldValue { recomputeFilteredEntries() } }
+    }
 
-    var filteredEntries: [LogEntry] {
-        entries.filter { entry in
+    @Published private(set) var filteredEntries: [LogEntry] = []
+
+    private var pendingTxDelta: Int = 0
+    private var pendingRxDelta: Int = 0
+    private var pendingPerEntryTx: [UUID: Int] = [:]
+    private var pendingPerEntryRx: [UUID: Int] = [:]
+    private var flushScheduled = false
+
+    private func recomputeFilteredEntries() {
+        filteredEntries = entries.filter { entry in
             let matchesSearch: Bool
             if searchText.isEmpty {
                 matchesSearch = true
@@ -42,6 +56,26 @@ final class LogStore: ObservableObject {
         }
     }
 
+    func setSearchText(_ s: String) {
+        searchText = s
+    }
+
+    func toggleMethod(_ method: LogEntry.HTTPMethod) {
+        if selectedMethods.contains(method) {
+            selectedMethods.remove(method)
+        } else {
+            selectedMethods.insert(method)
+        }
+    }
+
+    func toggleStatusFilter(_ filter: String) {
+        if selectedStatusFilters.contains(filter) {
+            selectedStatusFilters.remove(filter)
+        } else {
+            selectedStatusFilters.insert(filter)
+        }
+    }
+
     func log(host: String, port: Int, path: String, query: String?, method: LogEntry.HTTPMethod, requestHeaders: [String: String]) -> LogEntry {
         let newEntry = LogEntry(
             timestamp: Date(),
@@ -62,6 +96,7 @@ final class LogStore: ObservableObject {
         } else {
             entries = [newEntry] + entries
         }
+        recomputeFilteredEntries()
         return newEntry
     }
 
@@ -70,6 +105,7 @@ final class LogStore: ObservableObject {
             entries[index].responseStatusCode = responseStatusCode
             entries[index].responseHeaders = responseHeaders
             entries[index].duration = duration
+            recomputeFilteredEntries()
         }
     }
 
@@ -79,6 +115,7 @@ final class LogStore: ObservableObject {
             if entries[index].duration == nil {
                 entries[index].duration = Date().timeIntervalSince(entries[index].timestamp)
             }
+            recomputeFilteredEntries()
         }
     }
 
@@ -88,24 +125,54 @@ final class LogStore: ObservableObject {
             if entries[index].duration == nil {
                 entries[index].duration = Date().timeIntervalSince(entries[index].timestamp)
             }
+            recomputeFilteredEntries()
         }
     }
 
     func addTxBytes(_ count: Int, to entry: LogEntry? = nil) {
-        totalTxBytes += Int64(count)
-        if let entry = entry, let index = entries.firstIndex(where: { $0.id == entry.id }) {
-            var updated = entries[index]
-            updated.txBytes += Int64(count)
-            entries[index] = updated
+        pendingTxDelta += count
+        if let entry = entry {
+            pendingPerEntryTx[entry.id, default: 0] += count
         }
+        scheduleBytesFlush()
     }
 
     func addRxBytes(_ count: Int, to entry: LogEntry? = nil) {
-        totalRxBytes += Int64(count)
-        if let entry = entry, let index = entries.firstIndex(where: { $0.id == entry.id }) {
-            var updated = entries[index]
-            updated.rxBytes += Int64(count)
-            entries[index] = updated
+        pendingRxDelta += count
+        if let entry = entry {
+            pendingPerEntryRx[entry.id, default: 0] += count
+        }
+        scheduleBytesFlush()
+    }
+
+    private func scheduleBytesFlush() {
+        if flushScheduled { return }
+        flushScheduled = true
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.flushPendingBytes()
+        }
+    }
+
+    private func flushPendingBytes() {
+        let tx = pendingTxDelta; pendingTxDelta = 0
+        let rx = pendingRxDelta; pendingRxDelta = 0
+        let perTx = pendingPerEntryTx
+        let perRx = pendingPerEntryRx
+        pendingPerEntryTx.removeAll(keepingCapacity: true)
+        pendingPerEntryRx.removeAll(keepingCapacity: true)
+        flushScheduled = false
+        if tx > 0 { totalTxBytes += Int64(tx) }
+        if rx > 0 { totalRxBytes += Int64(rx) }
+        if perTx.isEmpty && perRx.isEmpty { return }
+        for i in entries.indices {
+            let id = entries[i].id
+            let dtx = perTx[id] ?? 0
+            let drx = perRx[id] ?? 0
+            if dtx != 0 || drx != 0 {
+                entries[i].txBytes += Int64(dtx)
+                entries[i].rxBytes += Int64(drx)
+            }
         }
     }
 
@@ -127,6 +194,7 @@ final class LogStore: ObservableObject {
         searchText = ""
         selectedMethods = []
         selectedStatusFilters = []
+        recomputeFilteredEntries()
     }
 
     func clearFilters() {

@@ -281,16 +281,17 @@ final class ProxyServer: ObservableObject {
             let requestHeaders = parseHeaders(from: request)
 
             print("[ProxyServer] processRequest: CONNECT to \(host):\(port), path=\(path)")
-            let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
-            logStore.incrementConnections()
-
-            do {
-                try establishTunnel(host: host, port: port, clientConnection: connection, logEntry: logEntry)
-            } catch {
-                print("[ProxyServer] processRequest: establishTunnel failed: \(error)")
-                logStore.failEntry(logEntry)
-                logStore.decrementConnections()
-                sendErrorResponse(connection, code: "502 Bad Gateway")
+            Task { @MainActor in
+                let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
+                logStore.incrementConnections()
+                do {
+                    try establishTunnel(host: host, port: port, clientConnection: connection, logEntry: logEntry)
+                } catch {
+                    print("[ProxyServer] processRequest: establishTunnel failed: \(error)")
+                    logStore.failEntry(logEntry)
+                    logStore.decrementConnections()
+                    sendErrorResponse(connection, code: "502 Bad Gateway")
+                }
             }
         } else {
             print("[ProxyServer] processRequest: handling as HTTP proxy request")
@@ -322,52 +323,56 @@ final class ProxyServer: ObservableObject {
         let requestHeaders = parseHeaders(from: request)
 
         print("[ProxyServer] handleHTTPPxoyRequest: \(methodStr) \(host):\(port)\(path)")
-        let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
-        logStore.incrementConnections()
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
+            logStore.incrementConnections()
 
-        let tunnelManager = TunnelManager(
-            host: host,
-            port: port,
-            logStore: logStore,
-            logEntry: logEntry
-        )
+            let tunnelManager = TunnelManager(
+                host: host,
+                port: port,
+                logStore: logStore,
+                logEntry: logEntry
+            )
 
-        let key = "\(host):\(port):\(ObjectIdentifier(connection as AnyObject))"
-        tunnelsLock.lock()
-        activeTunnels[key] = tunnelManager
-        tunnelsLock.unlock()
+            let key = "\(host):\(port):\(ObjectIdentifier(connection as AnyObject))"
+            tunnelsLock.lock()
+            activeTunnels[key] = tunnelManager
+            tunnelsLock.unlock()
 
-        tunnelManager.onConnected = { [weak self] in
-            print("[ProxyServer] handleHTTPPxoyRequest: connected to \(host):\(port), sending request")
-            self?.sendHTTPProxyRequest(tunnelManager: tunnelManager, methodStr: methodStr, path: path, query: query, request: request, connection: connection)
-            // Tunnel established; start forwarding client→server bytes
-            // (POST body, follow-up requests on the same connection).
-            self?.receiveHTTPRequest(connection)
-        }
-
-        tunnelManager.onClose = { [weak self] in
-            print("[ProxyServer] handleHTTPPxoyRequest: connection closed")
-            if let self = self {
-                self.logStore.completeEntry(logEntry)
-                self.logStore.decrementConnections()
-                self.tunnelsLock.lock()
-                self.activeTunnels.removeValue(forKey: key)
-                self.tunnelsLock.unlock()
+            tunnelManager.onConnected = { [weak self] in
+                guard let self = self else { return }
+                print("[ProxyServer] handleHTTPPxoyRequest: connected to \(host):\(port), sending request")
+                self.sendHTTPProxyRequest(tunnelManager: tunnelManager, methodStr: methodStr, path: path, query: query, request: request, connection: connection)
+                // Tunnel established; start forwarding client→server bytes
+                // (POST body, follow-up requests on the same connection).
+                self.receiveHTTPRequest(connection)
             }
-        }
 
-        tunnelManager.onError = { [weak self] in
-            print("[ProxyServer] handleHTTPPxoyRequest: connection error")
-            if let self = self {
-                self.logStore.failEntry(logEntry)
-                self.logStore.decrementConnections()
-                self.tunnelsLock.lock()
-                self.activeTunnels.removeValue(forKey: key)
-                self.tunnelsLock.unlock()
+            tunnelManager.onClose = { [weak self] in
+                print("[ProxyServer] handleHTTPPxoyRequest: connection closed")
+                if let self = self {
+                    self.logStore.completeEntry(logEntry)
+                    self.logStore.decrementConnections()
+                    self.tunnelsLock.lock()
+                    self.activeTunnels.removeValue(forKey: key)
+                    self.tunnelsLock.unlock()
+                }
             }
-        }
 
-        tunnelManager.startAsProxy(clientConnection: connection)
+            tunnelManager.onError = { [weak self] in
+                print("[ProxyServer] handleHTTPPxoyRequest: connection error")
+                if let self = self {
+                    self.logStore.failEntry(logEntry)
+                    self.logStore.decrementConnections()
+                    self.tunnelsLock.lock()
+                    self.activeTunnels.removeValue(forKey: key)
+                    self.tunnelsLock.unlock()
+                }
+            }
+
+            tunnelManager.startAsProxy(clientConnection: connection)
+        }
     }
 
     private func sendHTTPProxyRequest(tunnelManager: TunnelManager, methodStr: String, path: String, query: String?, request: String, connection: NWConnection) {

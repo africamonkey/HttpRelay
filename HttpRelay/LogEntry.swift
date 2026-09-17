@@ -34,10 +34,14 @@ struct LogEntry: Identifiable, Equatable {
         case failed
     }
 
-    var formattedTime: String {
+    private static let timeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter.string(from: timestamp)
+        return formatter
+    }()
+
+    var formattedTime: String {
+        Self.timeFormatter.string(from: timestamp)
     }
 
     var fullURL: String {
@@ -78,9 +82,5 @@ struct LogEntry: Identifiable, Equatable {
         if status == .failed { return true }
         guard let code = responseStatusCode else { return false }
         return code >= 400
-    }
-
-    static func == (lhs: LogEntry, rhs: LogEntry) -> Bool {
-        lhs.id == rhs.id
     }
 }

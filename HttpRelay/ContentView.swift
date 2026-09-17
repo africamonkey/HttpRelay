@@ -157,11 +157,14 @@ struct ContentView: View {
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
-                TextField("Search host/path...", text: $logStore.searchText)
-                    .textFieldStyle(.plain)
+                TextField("Search host/path...", text: Binding(
+                    get: { logStore.searchText },
+                    set: { logStore.setSearchText($0) }
+                ))
+                .textFieldStyle(.plain)
 
                 if !logStore.searchText.isEmpty {
-                    Button(action: { logStore.searchText = "" }) {
+                    Button(action: { logStore.setSearchText("") }) {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.secondary)
                     }
@@ -178,11 +181,7 @@ struct ContentView: View {
                             title: method.rawValue,
                             isSelected: logStore.selectedMethods.contains(method)
                         ) {
-                            if logStore.selectedMethods.contains(method) {
-                                logStore.selectedMethods.remove(method)
-                            } else {
-                                logStore.selectedMethods.insert(method)
-                            }
+                            logStore.toggleMethod(method)
                         }
                     }
 
@@ -194,11 +193,7 @@ struct ContentView: View {
                             title: status,
                             isSelected: logStore.selectedStatusFilters.contains(status)
                         ) {
-                            if logStore.selectedStatusFilters.contains(status) {
-                                logStore.selectedStatusFilters.remove(status)
-                            } else {
-                                logStore.selectedStatusFilters.insert(status)
-                            }
+                            logStore.toggleStatusFilter(status)
                         }
                     }
 
@@ -221,7 +216,7 @@ struct ContentView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 4) {
                 ForEach(logStore.filteredEntries) { entry in
-                    LogRowView(entryId: entry.id, logStore: logStore)
+                    LogRowView(entry: entry)
                         .onTapGesture {
                             if let updatedEntry = logStore.entries.first(where: { $0.id == entry.id }) {
                                 selectedEntry = updatedEntry
@@ -256,7 +251,7 @@ struct ContentView: View {
                 if showTutorialOnStart {
                     showTutorial = true
                 }
-                timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
                     if let start = startTime {
                         let elapsed = Int(Date().timeIntervalSince(start))
                         let hours = elapsed / 3600
@@ -303,55 +298,48 @@ struct FilterChip: View {
 }
 
 struct LogRowView: View {
-    let entryId: UUID
-    @ObservedObject var logStore: LogStore
-
-    private var entry: LogEntry? {
-        logStore.entries.first(where: { $0.id == entryId })
-    }
+    let entry: LogEntry
 
     var body: some View {
-        if let entry = entry {
-            HStack(spacing: 8) {
-                Text(entry.formattedTime)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundColor(.secondary)
+        HStack(spacing: 8) {
+            Text(entry.formattedTime)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.secondary)
 
-                Text(entry.method.rawValue)
+            Text(entry.method.rawValue)
+                .font(.caption)
+                .fontWeight(.bold)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(methodColor(for: entry.method))
+                .foregroundColor(.white)
+                .cornerRadius(4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.host)
                     .font(.caption)
-                    .fontWeight(.bold)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(methodColor(for: entry.method))
-                    .foregroundColor(.white)
-                    .cornerRadius(4)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.host)
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .lineLimit(1)
-                    Text(entry.path)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text(entry.formattedRxBytes)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                    Text(entry.formattedDuration)
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                }
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                Text(entry.path)
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(entry.isFailed ? Color.red.opacity(0.1) : Color.clear)
+
+            Spacer()
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(entry.formattedRxBytes)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text(entry.formattedDuration)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(entry.isFailed ? Color.red.opacity(0.1) : Color.clear)
     }
 
     private func methodColor(for method: LogEntry.HTTPMethod) -> Color {
