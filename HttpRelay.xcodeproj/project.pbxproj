@@ -29,9 +29,22 @@
 		E325B0A62F9A69AA007DB7A0 /* HttpRelayUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HttpRelayUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E37C913B305C258700369ADD /* Exceptions for "HttpRelay" folder in "HttpRelay" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E325B08C2F9A69A9007DB7A0 /* HttpRelay */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E325B08F2F9A69A9007DB7A0 /* HttpRelay */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E37C913B305C258700369ADD /* Exceptions for "HttpRelay" folder in "HttpRelay" target */,
+			);
 			path = HttpRelay;
 			sourceTree = "<group>";
 		};
@@ -400,6 +413,7 @@
 				DEVELOPMENT_TEAM = UTC679J6KQ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = HttpRelay/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "HTTP Debugger+";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSBonjourServices = _http._tcp;
@@ -437,6 +451,7 @@
 				DEVELOPMENT_TEAM = UTC679J6KQ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = HttpRelay/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "HTTP Debugger+";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_NSBonjourServices = _http._tcp;
