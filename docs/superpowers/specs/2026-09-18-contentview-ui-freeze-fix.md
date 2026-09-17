@@ -1,283 +1,275 @@
-# ContentView UI Freeze — Root Cause & Fix Design (REVISED)
+# ContentView UI Freeze — Root Cause & Fix Design (v3)
 
-**Date:** 2026-09-18 (revised after /tmp/log.txt evidence)
+**Date:** 2026-09-18 (third revision after user clarification)
 **Status:** Draft (awaiting user approval)
 
-## What changed from the previous revision
+## What changed from v2
 
-The first revision of this spec hypothesised a performance bottleneck on the
-main thread driven by per-packet `@Published` writes. Evidence from
-`/tmp/log.txt` (a real-device run with traffic) contradicts that:
+The v2 revision argued that the UI freeze is *caused* by actor-isolation
+violations (166 `Publishing changes from background threads` warnings plus
+61 `Updating ObservedObject<LogStore> from background threads` warnings in
+`/tmp/log.txt`).
 
-- **166 occurrences** of `Publishing changes from background threads is not
-  allowed; make sure to publish values from the main thread (via operators
-  like receive(on:)) on model updates.` in the console.
-- **Multiple** `LogStore.searchText is isolated to the main actor. Accessing
-  it via Binding from a different actor will cause undefined behaviors, and
-  potential data races; This warning will become a runtime crash in a future
-  version of SwiftUI.` warnings.
+User clarification: **`/tmp/log.txt` was captured after the UI recovered,
+not during the freeze.** The warnings are real, but we cannot pin the
+freeze on them alone — they may have been emitted while the system was
+cleaning up after the freeze, or while the app was still processing
+leftover traffic. Debugging capability is limited to console output;
+Instruments / LLDB stack sampling is not available.
 
-These are not just noise. They mean the `LogStore` `@Published` properties are
-being mutated off the main thread, which corrupts SwiftUI's observation
-pipeline and is consistent with the observed UI freeze.
+User decision: **fix both the actor-isolation violations and the
+performance hotspots** identified in v1. Defensive in depth — neither
+fix is provably *the* root cause from the available evidence, but both
+are real defects that should be corrected.
 
-The performance-bottleneck hypothesis is **withdrawn**. The real root cause
-is **actor-isolation violation** — `ProxyServer` and `TunnelManager` call
-`@MainActor LogStore` methods synchronously from connection callbacks that
-run on `DispatchQueue.global()` / the per-tunnel serial queue.
+## Honest assessment of root cause
 
-## Problem Statement
+The available evidence supports, but does not prove, the following:
 
-After enabling the proxy server on a real iOS device and pushing traffic
-through it, the SwiftUI UI becomes completely unresponsive: no buttons
-respond, the Toggle cannot be flipped, the gear / clear-logs buttons do
-nothing. The process does not crash and does not produce a debugger trap.
-
-User-confirmed characteristics:
-
-- Occurs shortly after the proxy is started and traffic flows.
-- UI is fully frozen (not just slow).
-- Reproduced on a real iOS device.
-- `/tmp/log.txt` shows 166 `Publishing changes from background threads`
-  warnings and multiple `LogStore.searchText ... isolated to the main actor`
-  warnings.
-
-## Root Cause
-
-`LogStore` is declared `@MainActor` (LogStore.swift:5). All of its mutating
-methods (`log`, `incrementConnections`, `decrementConnections`,
-`completeEntry`, `failEntry`, `updateEntry`, `addTxBytes`, `addRxBytes`)
-are therefore main-actor-isolated.
-
-The proxy server, however, calls these methods **synchronously from
-non-main-actor callbacks**:
-
-| Caller | Callback queue | Background logStore calls |
+| Evidence | What it shows | What it does not show |
 |---|---|---|
-| `ProxyServer.processRequest` (line 284, 285, 291, 292) | `DispatchQueue.global()` (connection queue) | `log`, `incrementConnections`, `failEntry`, `decrementConnections` |
-| `ProxyServer.handleHTTPPxoyRequest` (line 325, 326, 351, 352, 362, 363, 402) | `DispatchQueue.global()` | `log`, `incrementConnections`, `completeEntry`, `decrementConnections`, `failEntry`, `updateEntry` |
-| `ProxyServer.establishTunnel` callbacks (line 470, 471, 481, 482) | `DispatchQueue.global()` | `completeEntry`, `decrementConnections`, `failEntry` |
-| `TunnelManager.start` state handlers (line 75, 85, 93) | per-tunnel serial queue `com.httprelay.tunnel` | `failEntry`, `completeEntry` |
-| `TunnelManager.startAsProxy` state handlers (line 170, 177, 185) | per-tunnel queue | `failEntry`, `completeEntry` |
-| `TunnelManager.startProxyForwarding` / `continueProxyForwarding` (line 233, 282) | per-tunnel queue | `addRxBytes` |
-| `TunnelManager.sendToServer` (line 314) | per-tunnel queue | `addTxBytes` |
-| `TunnelManager.startForwarding` (line 360) | per-tunnel queue | `addRxBytes` |
-| `TunnelManager.parseAndLogResponse` (line 413) | per-tunnel queue | `updateEntry` |
-| `TunnelManager.forwardToClient` (line 448) | per-tunnel queue | `addRxBytes` |
-| `TunnelManager.receiveClientData` (line 483) | per-tunnel queue | `addTxBytes` |
-| `TunnelManager.scheduleConnectionTimeout` (line 520) | per-tunnel queue | `failEntry` |
+| 166 `Publishing changes from background threads` warnings | `@Published` fields are mutated off the main actor | That this mutation *caused* the freeze (warnings are tolerated in iOS 16) |
+| 61 `Updating ObservedObject<LogStore> from background threads will cause undefined behavior` | SwiftUI's own diagnostic on the same issue | The specific runtime consequence (could be anything) |
+| 9 `LogStore.searchText is isolated to the main actor. ... This warning will become a runtime crash in a future version of SwiftUI.` | SwiftUI compiler-time warning about future crash | That today's freeze is *that* future crash |
+| `LogRowView` does O(n) `entries.first(where:)` per body | O(n²) work per body pass when entries ≈ 100+ | That the work is on the critical path of the freeze |
+| 0.1s `Timer` driving `uptimeString` updates | 10 Hz re-render trigger | That 1 Hz would have been enough |
 
-`SOCKS5.swift` already wraps most calls in `Task { @MainActor in ... }`
-(but `SOCKS5.swift:511` is missing the wrap and is also a bug).
+The freeze could be any of:
+1. SwiftUI observation pipeline corruption from background `@Published`
+   writes (the v2 hypothesis).
+2. Main thread saturation by O(n²) `LogRowView` work × 10 Hz timer ×
+   per-packet body invalidation (the v1 hypothesis).
+3. A deadlock between `Task { @MainActor in ... }` queues and the
+   main runloop's input source that we have not yet seen.
+4. Some combination.
 
-Each synchronous cross-actor call mutates a `@Published` property from a
-background thread. Consequences:
-
-1. **Combine warning** `Publishing changes from background threads is not
-   allowed` is emitted every time, producing log spam and signalling that
-   `objectWillChange` is firing from the wrong thread.
-2. **SwiftUI's observation pipeline** is confused: the `@Published` setter
-   runs on a background thread, but the views are bound on the main thread.
-   In iOS 16, this can leave SwiftUI in a state where it never finishes a
-   body update cycle, which manifests as the observed freeze.
-3. **`searchText` warning** appears when the `TextField` binding writes from
-   a non-main actor context; SwiftUI's diagnostic points at undefined
-   behaviour and future crashes.
-
-The 0.1s `Timer` and the O(n²) `LogRowView` work are real costs but are
-**not** the primary cause of the freeze — they are amplifiers that turn the
-already-broken observation pipeline into a hard hang.
+Because we cannot distinguish (1)–(4) from the available evidence, the
+safest course is to fix all known defects and re-test. If the freeze
+recurs after these fixes, we will need better tooling (Instruments).
 
 ## Goals
 
-- Eliminate the 166 `Publishing changes from background threads` warnings.
-- Restore main-actor isolation for every `LogStore` mutator.
-- Stop the UI freeze on a real device under traffic load.
-- Preserve existing functionality (logs, filters, bytes counters, connection
-  counts, byte-formatted rows, detail view, SOCKS5).
-- No changes to wire protocol, SOCKS5 state machine, or proxying semantics.
+- Eliminate all background-thread `@Published` mutations on `LogStore`
+  (zero "Publishing changes from background threads" warnings).
+- Reduce per-body work from O(n²) to O(n) for the log list.
+- Reduce the body's re-render trigger rate from 10 Hz to 1 Hz.
+- Cache the `DateFormatter` used by `LogEntry.formattedTime`.
+- Throttle per-packet `addTxBytes` / `addRxBytes` to a frame rate.
 
 ## Non-Goals
 
 - Migrating to `@Observable` / Observation framework (requires iOS 17).
 - Reducing log retention below 500 entries.
-- Removing `@MainActor` from `LogStore` (the actor isolation is correct; the
-  callers are wrong).
+- Removing `@MainActor` from `LogStore`.
+- Rewriting the proxy / SOCKS5 state machines.
 
 ## Proposed Fix
 
-### Fix A — Wrap every background logStore call in a MainActor hop
+### Fix A — Wrap every background logStore call in a main-actor hop
 
-For every site listed in the table above, route the call through the main
+For each of the call sites listed below, route the call through the main
 actor. Two patterns depending on the call site:
 
-1. **Inside a callback that can become async / already uses `Task`** — wrap
-   in `Task { @MainActor in ... }`. Used when the caller is already in a
-   `Task` block or when we want to coalesce with the existing task.
+1. **Synchronous callback on a connection / tunnel queue** — use
+   `Task { @MainActor in ... }`. Existing call sites that already use
+   this pattern stay as they are; we only fix the ones that don't.
 
-2. **Inside a synchronous callback** — wrap in
-   `DispatchQueue.main.async { ... }` (or `Task { @MainActor in ... }`,
-   which is equivalent on iOS 16 when not awaiting).
+2. **Inside an async context that already awaits** — same pattern.
 
-For each call site the change is mechanical: insert one extra closure. The
-return values that flow back into the caller (e.g. `LogEntry` from `log()`)
-must be captured **before** the hop. Example:
+Mechanical change: insert the Task wrapper, capture any return values
+(e.g. `LogEntry` from `log()`) **before** the hop, and pass them into
+the body of the Task.
+
+Call sites to fix (none have an existing wrapper):
+
+- `ProxyServer.swift:284, 285, 291, 292` — `processRequest` CONNECT path
+- `ProxyServer.swift:325, 326, 351, 352, 362, 363` — `handleHTTPPxoyRequest`
+- `ProxyServer.swift:402` — `sendHTTPProxyRequest`
+- `ProxyServer.swift:470, 471, 481, 482` — `establishTunnel` callbacks
+- `TunnelManager.swift:75, 85, 93` — `start` state handlers
+- `TunnelManager.swift:170, 177, 185` — `startAsProxy` state handlers
+- `TunnelManager.swift:520` — `scheduleConnectionTimeout` expiry
+- `SOCKS5.swift:511, 531` — UDP relay forward completion
+
+Call sites that already wrap (verify, do not change):
+- `TunnelManager.swift:232-234, 281-283, 313-315, 359-361, 412-419, 447-449, 482-484`
+- `SOCKS5.swift:302, 321, 557`
+
+### Fix B — Cache `LogEntry`'s `DateFormatter`
 
 ```swift
-// Before (ProxyServer.swift:284)
-let logEntry = logStore.log(host: host, port: port, path: path,
-                            query: query, method: method,
-                            requestHeaders: requestHeaders)
-logStore.incrementConnections()
-do {
-    try establishTunnel(host: host, port: port, clientConnection: connection,
-                        logEntry: logEntry)
-} catch {
-    logStore.failEntry(logEntry)
-    logStore.decrementConnections()
-    sendErrorResponse(connection, code: "502 Bad Gateway")
+private static let timeFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm:ss.SSS"
+    return formatter
+}()
+
+var formattedTime: String { Self.timeFormatter.string(from: timestamp) }
+```
+
+### Fix C — `LogRowView` value parameter instead of `@ObservedObject`
+
+Replace
+```swift
+struct LogRowView: View {
+    let entryId: UUID
+    @ObservedObject var logStore: LogStore
+    private var entry: LogEntry? {
+        logStore.entries.first(where: { $0.id == entryId })
+    }
+}
+```
+with
+```swift
+struct LogRowView: View {
+    let entry: LogEntry
 }
 ```
 
-Becomes:
-
+In `ContentView.logsList`:
 ```swift
-let requestHeaders = parseHeaders(from: request)
-let path: String
-let query: String?
-(path, query) = parsePathAndQuery(from: request)
-logStore.append(.init(host: host, port: port, path: path, query: query,
-                      method: method, requestHeaders: requestHeaders))
-// or: enqueue on main and continue after the LogEntry is assigned
+ForEach(logStore.filteredEntries) { entry in
+    LogRowView(entry: entry)
+        .onTapGesture { ... }
+}
 ```
 
-The cleanest refactor is to introduce a small **dispatcher on `LogStore`**:
+Effect: rows no longer subscribe to `LogStore`. They only re-render when
+their `entry` value is replaced. Per-body work drops from O(n²) to O(n).
+
+### Fix D — Cache `filteredEntries` as `@Published`
+
+Replace the computed property with a `@Published private(set) var
+filteredEntries: [LogEntry] = []` and recompute in a single function
+called whenever inputs change. Wrap each existing mutator in
+`applyChange { ... }` so `recomputeFilteredEntries()` is called once per
+mutator invocation.
+
+### Fix E — Throttle byte-counter writes to one per main-actor frame
+
+In `LogStore`:
 
 ```swift
-extension LogStore {
-    /// Capture the necessary values on the caller's thread, then hop to the
-    /// main actor to perform the mutation. Returns the LogEntry on the main
-    /// actor via the completion closure.
-    func appendOnMain(_ payload: LogPayload,
-                      completion: @MainActor @escaping (LogEntry) -> Void) {
-        Task { @MainActor in
-            let entry = self.log(host: payload.host, port: payload.port, ...)
-            self.incrementConnections()
-            completion(entry)
-        }
+private var pendingTxDelta: Int = 0
+private var pendingRxDelta: Int = 0
+private var pendingPerEntryTx: [UUID: Int] = [:]
+private var pendingPerEntryRx: [UUID: Int] = [:]
+private var flushScheduled = false
+
+func addTxBytes(_ count: Int, to entry: LogEntry? = nil) {
+    pendingTxDelta += count
+    if let entry = entry { pendingPerEntryTx[entry.id, default: 0] += count }
+    scheduleFlush()
+}
+func addRxBytes(_ count: Int, to entry: LogEntry? = nil) {
+    pendingRxDelta += count
+    if let entry = entry { pendingPerEntryRx[entry.id, default: 0] += count }
+    scheduleFlush()
+}
+private func scheduleFlush() {
+    if flushScheduled { return }
+    flushScheduled = true
+    Task { @MainActor [weak self] in
+        await Task.yield()
+        self?.flushPendingBytes()
     }
 }
 ```
 
-But that pushes awkwardness onto the call sites that need the `LogEntry`
-back synchronously (e.g. `establishTunnel(host:port:clientConnection:logEntry:)`).
-A simpler and equally correct shape is:
+`flushPendingBytes` then writes the deltas to `@Published` fields in one
+shot per frame.
 
-1. Compute all values that are needed on the calling thread (host, port,
-   path, query, method, requestHeaders, responseHeaders, statusCode,
-   duration, byte counts, etc.) **before** the hop.
-2. Hop to main with `Task { @MainActor in ... }` (or
-   `DispatchQueue.main.async`) and do all `LogStore` work inside the hop.
-3. If a callback the caller needs (e.g. `establishTunnel`) needs to run
-   after the `LogEntry` exists, schedule that from inside the hop.
+### Fix F — Lower uptime timer to 1 Hz
 
-This costs one extra dispatch per log lifecycle event (1 log + 1 done per
-request) — well below the rate at which `objectWillChange` was being
-mis-fired.
+`ContentView.swift:259`: change `withTimeInterval: 0.1` to `1.0`.
 
-### Fix B — `SOCKS5.swift:511` and `531`
+### Fix G — Remove the `DebugPerf` instrumentation after validation
 
-Both `addTxBytes` calls inside `SOCKS5UDPRelay.forward` are inside the
-`outbound.send(...)` completion closure, which runs on the socks5 queue
-(not the main actor). Wrap them in `Task { @MainActor in ... }` like the
-other SOCKS5 call sites.
-
-### Fix C — `TunnelManager.receiveClientData` (line 483)
-
-This is called from `ProxyServer.receiveHTTPRequest`'s callback, which runs
-on `DispatchQueue.global()`. The current code does:
-
-```swift
-Task { @MainActor in
-    self.logStore.addTxBytes(data.count, to: self.logEntry)
-}
-```
-
-…which is correct — `addTxBytes` is hopped. **No change needed**; just
-leave it as-is. Same for `parseAndLogResponse`'s `updateEntry` (already
-inside a `Task { @MainActor in ... }`).
-
-### Fix D — Don't relax `LogStore` actor isolation
-
-Do **not** remove `@MainActor` from `LogStore`. The class is a SwiftUI
-`ObservableObject`; SwiftUI expects mutations on the main actor. The
-correctness fix is on the callers, not the model.
-
-### Fix E (retain from first revision) — Cache the `DateFormatter`
-
-`LogEntry.formattedTime` creates a new `DateFormatter` on every body
-evaluation. Cache it as a `static let`. Cheap, isolated, no callers
-change.
-
-### Fix F (defer) — The performance improvements from the first revision
-
-Fixes 1 (throttled byte flush), 2 (`LogRowView` value parameter), 3
-(cached `filteredEntries`), and 5 (1 Hz timer) from the previous revision
-are real wins but are **not** required to fix the freeze. Defer them to a
-follow-up spec once the freeze is gone and we can profile honestly.
+The `DebugPerf` enum, the `// DEBUG_PERF` comments in `LogStore.swift`,
+and the temporary `CACurrentMediaTime` measurement in `addTxBytes` /
+`addRxBytes` are added for the v1 instrumentation step. They MUST be
+removed before the final commit.
 
 ## Files Touched
 
 | File | Change |
 |---|---|
-| `HttpRelay/ProxyServer.swift` | Wrap all `logStore.*` calls in `processRequest`, `handleHTTPPxoyRequest`, `establishTunnel`, callbacks, and `sendHTTPProxyRequest` in main-actor hops. |
-| `HttpRelay/TunnelManager.swift` | Wrap all `logStore.*` calls in `start`, `startAsProxy`, `startProxyForwarding`, `continueProxyForwarding`, `sendToServer`, `startForwarding`, `parseAndLogResponse`, `forwardToClient`, `receiveClientData`, `scheduleConnectionTimeout` in main-actor hops. (Several are already inside `Task { @MainActor in ... }`; verify each.) |
-| `HttpRelay/SOCKS5.swift` | Fix lines 511 and 531 to wrap `addTxBytes` in `Task { @MainActor in ... }`. |
-| `HttpRelay/LogEntry.swift` | Cache `DateFormatter` as `static let` (Fix E). |
+| `HttpRelay/ProxyServer.swift` | Fix A (wrap `logStore.*` calls in `processRequest`, `handleHTTPPxoyRequest`, `sendHTTPProxyRequest`, `establishTunnel` callbacks). |
+| `HttpRelay/TunnelManager.swift` | Fix A (wrap `logStore.*` calls in `start`, `startAsProxy`, `scheduleConnectionTimeout`). |
+| `HttpRelay/SOCKS5.swift` | Fix A (fix `SOCKS5UDPRelay.forward` lines 511, 531). |
+| `HttpRelay/LogEntry.swift` | Fix B (cache `DateFormatter`). |
+| `HttpRelay/ContentView.swift` | Fix C (`LogRowView` value param), Fix F (1 Hz timer). |
+| `HttpRelay/LogStore.swift` | Fix D (cached `filteredEntries`), Fix E (frame-throttled byte flush). Fix G (remove `DebugPerf`). |
 
-No changes to `ContentView.swift`, `LogStore.swift`, `BackgroundKeepaliveCoordinator.swift`, `HttpRelayApp.swift`.
+## Implementation order
+
+1. Fix G — remove `DebugPerf` instrumentation from `ContentView.swift` and
+   `LogStore.swift`. Build and run; confirm clean console (no
+   `// DEBUG_PERF` markers).
+2. Fix B — cache `DateFormatter`. Build.
+3. Fix F — 1 Hz timer. Build.
+4. Fix C — `LogRowView` value parameter. Build.
+5. Fix D — cached `filteredEntries`. Build.
+6. Fix E — throttled byte flush. Build.
+7. Fix A — wrap every background `logStore.*` call. Build.
+8. Final clean build + on-device validation.
+
+This order keeps each change small and buildable. Fixes B, F, C, D, E
+are pure refactors that don't change behaviour. Fix A is the largest
+mechanical change.
 
 ## Validation Strategy
 
-1. **Build** with `xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay
-   -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17
-   Pro' build` — must compile clean.
-2. **Re-deploy with the existing `DebugPerf` instrumentation** (still in
-   `ContentView.swift` and `LogStore.swift` from the previous step). Confirm
-   that `[DEBUG bytes]` lines appear in console and that `maxMs` is small
-   (sub-millisecond) under traffic.
-3. **Re-deploy and run the same scenario that produced `/tmp/log.txt`**.
-   Confirm:
+1. Build with `xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay
+   -configuration Debug -destination 'platform=iOS Simulator,name=iPhone
+   17 Pro' build` — must compile clean at each step.
+2. Re-deploy with no `DebugPerf` instrumentation. Push traffic.
+3. Confirm in `/tmp/log.txt` (capture during a fresh run, ideally while
+   the UI is responsive):
    - **Zero** `Publishing changes from background threads` warnings.
-   - **Zero** `LogStore.searchText is isolated to the main actor` warnings.
-   - The Toggle still flips and the gear / trash buttons still respond
-     while traffic flows.
-4. **Remove the `DebugPerf` instrumentation** and the temporary
-   `addTxBytes/addRxBytes` measurement blocks (`// DEBUG_PERF` markers).
-   Re-build, re-deploy, and confirm a clean console.
+   - **Zero** `Updating ObservedObject<LogStore>` warnings.
+   - **Zero** `LogStore.searchText is isolated to the main actor`
+     warnings.
+4. Confirm UI remains responsive during traffic: Toggle flips, gear /
+   trash buttons work, filter chips respond, log entries scroll.
+5. If the freeze still occurs, the freeze is *not* caused by (1) actor
+   isolation or (2) performance hotspots identified here. Reopen
+   debugging with Instruments.
 
 ## Risks / Open Questions
 
-- Some call sites currently use the synchronous return value of
-  `logStore.log(...)` (the `LogEntry` is passed into
-  `establishTunnel`). After wrapping, the `LogEntry` is only available on
-  the main actor, so `establishTunnel` must be scheduled from inside the
-  main-actor hop. The semantics are unchanged: a tunnel is only created
-  once we have a log entry. We need to verify that no caller relies on
-  the tunnel being created synchronously with `processRequest`.
-- The receive loop on `NWConnection` is re-armed from the completion
-  handler of a `send` (e.g. `client.send(...)` in
-  `forwardToClient`). These completions run on the connection queue
-  (global), not the main actor. Wrapping the `logStore.addRxBytes` in a
-  `Task { @MainActor in ... }` does **not** delay the re-arm — we must
-  schedule the re-arm independently of the logStore hop.
-- Each existing `Task { @MainActor in self.logStore.addRxBytes(...) }`
-  creates a fresh `Task` per packet. With the fix in place this is the
-  same cost as today — but now it's correctly isolated. If profiling
-  later shows this is too expensive, throttle as in Fix F.
+- Fix A: `processRequest` currently does
+  `let logEntry = logStore.log(...)` synchronously and then passes
+  `logEntry` to `establishTunnel`. After wrapping, the `logEntry` is
+  only available on the main actor. `establishTunnel` must be scheduled
+  from inside the main-actor hop. The semantics are unchanged — the
+  tunnel is only created after the log entry exists.
+- Fix A: receive loops that re-arm from `client.send(...)`'s completion
+  run on the connection queue, not the main actor. The `logStore` hop
+  must not delay the re-arm.
+- Fix C: with `LogRowView` taking a value `LogEntry`, when an entry's
+  `txBytes` / `rxBytes` are updated by Fix E's flush, every visible row
+  whose entry changed is re-rendered. SwiftUI's `Identifiable` diff
+  handles this correctly because `UUID` doesn't change.
+- Fix D: `searchText`, `selectedMethods`, `selectedStatusFilters` remain
+  `@Published`. Views observing them still re-render on each keystroke —
+  that's correct (filter UI must update), and `recomputeFilteredEntries`
+  bounds the cost.
+- Fix E: counters lag the wire by one frame (~16 ms at 60 Hz). Acceptable
+  for a human-visible counter; per-entry bytes still accumulate
+  correctly.
 
 ## Out of Scope
 
 - Migrating to `@Observable` (iOS 17+ requirement).
-- Throttling bytes updates (Fix F from first revision).
 - Persisting logs across launches.
+- Profiling with Instruments (requires additional tooling).
+
+## Provenance
+
+- v1 (initial): hypothesised a performance bottleneck on the main thread.
+- v2 (revised): hypothesised actor-isolation violation as the primary
+  cause.
+- v3 (this revision): acknowledges that we cannot isolate the cause from
+  the available evidence (`/tmp/log.txt` was captured *after* recovery),
+  and proposes fixing both.
