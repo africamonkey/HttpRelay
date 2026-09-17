@@ -12,9 +12,14 @@ final class BackgroundKeepaliveCoordinator {
     func start() {
         guard ProxyServer.shared?.isRunning == true else { return }
         guard taskID == .invalid else { return }
-        taskID = UIApplication.shared.beginBackgroundTask(withName: "HttpRelay.Keepalive") { [weak self] in
+        let newID = UIApplication.shared.beginBackgroundTask(withName: "HttpRelay.Keepalive") { [weak self] in
             self?.expire()
         }
+        if newID == .invalid {
+            print("[Keepalive] beginBackgroundTask returned .invalid; no background time granted")
+            return
+        }
+        taskID = newID
     }
 
     func stop() {
@@ -24,6 +29,7 @@ final class BackgroundKeepaliveCoordinator {
     }
 
     private func expire() {
+        print("[Keepalive] background task expired; stopping proxy")
         stop()
         ProxyServer.shared?.stop()
     }
