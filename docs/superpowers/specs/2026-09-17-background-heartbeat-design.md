@@ -117,12 +117,28 @@ AudioHeartbeat.shared.stop()
 
 - `@AppStorage("heartbeatEnabled") private var heartbeatOn: Bool = true`（默认开启）
 - `@State private var heartbeatRunning: Bool = false`（来自 `AudioHeartbeat.shared.isRunning`）
-- UI 元素：
-  - 状态行副文字：`isRunning ? (heartbeatRunning ? "心跳：开启（后台时）" : "心跳：关闭（后台时）") : ""`
-  - 在端口 / IP 区域下方加一个 `Toggle("心跳提示音", isOn: $heartbeatOn)`，proxy 运行中也允许切换
+- UI 元素（在端口 / IP 区域下方）：
+  ```
+  Toggle("心跳提示音", isOn: $heartbeatOn)
+  ```
+- 状态行副文字（小字，跟随主状态灯配色）：
+  - proxy 未运行 → 隐藏
+  - proxy 运行 + `heartbeatRunning == true` → "心跳：开启"（绿色）
+  - proxy 运行 + `heartbeatRunning == false`（启动失败或被关）→ "心跳：关闭"（灰色）
+
+**状态矩阵：**
+
+| proxy 状态 | `heartbeatOn` | `heartbeatRunning` | 副文字 |
+|---|---|---|---|
+| 未运行 | true / false | false | （隐藏） |
+| 运行中 | true | true | 心跳：开启（绿） |
+| 运行中 | true | false（启动失败） | 心跳：关闭（灰） |
+| 运行中 | false | false | 心跳：关闭（灰） |
+
 - 切换逻辑：proxy 运行时 `heartbeatOn` 的变化立即调用 `AudioHeartbeat.shared.start()/stop()`；
   proxy 停止时仅更新 `heartbeatOn` 持久值，下次启动时按此值决定是否启心跳。
 - 文案：直接 hardcode（与项目内现有 hardcode 风格一致）。
+- 不在 ContentView 暴露音量控件（统一在 SettingsView 调），避免主界面过载。
 
 ### `SettingsView` 改动
 
