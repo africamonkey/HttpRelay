@@ -32,8 +32,10 @@ iOS 唯一允许"长时间后台运行任意任务"的合法模式之一是 `UIB
 
 **做：**
 - 新增 `AudioHeartbeat.swift`（AVAudioEngine + AVAudioPlayerNode 周期性播放"滴答"提示音）。
-- 在 `ProxyServer.start()` / `stop()` 中分别启动/停止心跳。
-- 修改 `ContentView` 增加心跳状态文字。
+- 在 `ProxyServer.start()` / `stop()` 中根据用户开关决定是否启动心跳。
+- 修改 `ContentView`：
+  - 新增"心跳提示音" toggle（默认开启，proxy 运行前/后都可切换）
+  - 状态行显示 "心跳：开启/关闭（后台时）"
 - 修改 Xcode project 把 `UIBackgroundModes=audio` 注入 Info.plist。
 
 **不做：**
@@ -76,11 +78,12 @@ final class AudioHeartbeat {
 
 `start()` 末尾追加：
 ```swift
-do {
-    try AudioHeartbeat.shared.start()
-} catch {
-    logStore.log(host: "-", port: 0, status: .error)
-    // 不阻塞代理启动；前台仍可工作。
+if heartbeatEnabled {
+    do {
+        try AudioHeartbeat.shared.start()
+    } catch {
+        logStore.log(host: "-", port: 0, status: .error)
+    }
 }
 ```
 
@@ -89,11 +92,19 @@ do {
 AudioHeartbeat.shared.stop()
 ```
 
+`heartbeatEnabled` 由 `ContentView` 通过 setter 注入（如 `proxyServer.heartbeatEnabled = heartbeatOn`）。
+若 proxy 运行中切换 toggle，立即同步启停 `AudioHeartbeat.shared.start()/stop()`。
+
 ### `ContentView` 改动
 
-- `@State private var heartbeatOn: Bool = false`，每 0.5s 轮询 `AudioHeartbeat.shared.isRunning` 更新（实际用 `Timer.publish` 或 `onReceive`）。
-- 状态行副文字：当 `isRunning && heartbeatOn` → "心跳：开启"（绿色）；否则 "心跳：关闭"（灰色）。
-- 文案：使用现有本地化字符串表（如有），否则直接 hardcode（与项目内现有 hardcode 风格一致）。
+- `@State private var heartbeatOn: Bool = true`（默认开启；持久化到 `UserDefaults`）
+- `@State private var heartbeatRunning: Bool = false`（来自 `AudioHeartbeat.shared.isRunning`）
+- UI 元素：
+  - 状态行副文字：`isRunning ? (heartbeatRunning ? "心跳：开启（后台时）" : "心跳：关闭（后台时）") : ""`
+  - 在端口 / IP 区域下方加一个 `Toggle("心跳提示音", isOn: $heartbeatOn)`，proxy 运行中也允许切换
+- 切换逻辑：proxy 运行时 `heartbeatOn` 的变化立即调用 `AudioHeartbeat.shared.start()/stop()`；
+  proxy 停止时仅更新 `heartbeatOn` 持久值，下次启动时按此值决定是否启心跳。
+- 文案：直接 hardcode（与项目内现有 hardcode 风格一致）。
 
 ## 生命周期与数据流
 
@@ -144,7 +155,9 @@ AVAudioSession.interruptionNotification (ended)
 | 其他 App 抢占音频 | `.mixWithOthers` 选项允许共存，心跳不被抢占 |
 | 耳机拔出 / 路由变化 | 不影响 engine，继续循环 |
 | App 被系统彻底杀掉 | 用户重新开启代理时心跳重建，无需特殊处理 |
-| 心跳启动但 proxy 未启动 | 不会出现：`start()` 调用顺序保证心跳在 listener 启动**之后**或**之前**均可，但只在 proxy start 内被调用 |
+| 心跳启动但 proxy 未启动 | 不会出现：心跳仅在 proxy start 内被调用 |
+| 用户在 proxy 运行中关闭心跳 toggle | 立即 `AudioHeartbeat.shared.stop()`；proxy 继续运行，但锁屏后会被挂起 |
+| 用户在 proxy 运行中开启心跳 toggle | 立即 `AudioHeartbeat.shared.start()` |
 
 ## Info.plist 改动
 
@@ -165,8 +178,8 @@ INFOPLIST_KEY_UIBackgroundModes = "audio";
 | 文件 | 类型 | 说明 |
 |---|---|---|
 | `HttpRelay/AudioHeartbeat.swift` | 新增 | AVAudioEngine 心跳封装 |
-| `HttpRelay/ProxyServer.swift` | 修改 | start/stop 中 hook AudioHeartbeat |
-| `HttpRelay/ContentView.swift` | 修改 | 状态行副文字 "心跳：开启/关闭" |
+| `HttpRelay/ProxyServer.swift` | 修改 | start/stop 中按开关状态 hook AudioHeartbeat；暴露 `heartbeatEnabled` |
+| `HttpRelay/ContentView.swift` | 修改 | 心跳 toggle、状态行副文字 "心跳：开启/关闭（后台时）" |
 | `HttpRelay.xcodeproj/project.pbxproj` | 修改 | 添加 `INFOPLIST_KEY_UIBackgroundModes = "audio"` |
 
 不改动：`LogStore.swift`、`LogEntry.swift`、`TunnelManager.swift`、`HttpRelayApp.swift`。
@@ -184,11 +197,16 @@ xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay \
 ### 手动验证（模拟器 + 真机）
 
 1. **后台存活（核心）**
-   - 启动 proxy → 锁屏（或切到其他 App）→ 等待 60s → 回到 HttpRelay
+   - 启动 proxy（心跳默认开启）→ 锁屏（或切到其他 App）→ 等待 60s → 回到 HttpRelay
    - 从 Windows 侧发起新 HTTPS 请求
    - 预期：日志新增一行 `connected`，TX/RX 计数器递增
 
-2. **心跳启动失败的降级路径**
+2. **心跳 UI 开关**
+   - 启动 proxy → 关闭"心跳提示音"toggle → 锁屏 → 等待 60s
+   - 预期：锁屏后 proxy 挂起，新连接不响应；回到前台后恢复
+   - 再开启 toggle → 锁屏 → 预期：保持连接
+
+3. **心跳启动失败的降级路径**
    - 模拟音频会话被其他 App 占用、`setActive` 抛错的场景（如有 `am instrument` 工具可用）
    - 预期：日志出现 `error` 条目，但 proxy 仍能在前台正常工作；UI 显示"心跳：关闭"
 
@@ -214,8 +232,9 @@ xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay \
 ## 风险与权衡
 
 - **App Store 审核风险**：`UIBackgroundModes: audio` 必须有真实可听的音频内容。
-  本设计以"后台心跳提示音"为产品语义（每 3s 一次轻滴答），UI 上有状态文字，
-  作为合理化依据。本项目主要用于个人/团队自用，App Store 风险属可接受范围。
+  本设计以"后台心跳提示音"为产品语义（每 3s 一次轻滴答），UI 上**提供用户可关闭的 toggle**，
+  让用户对后台音频有控制权 —— 这是 Apple 审核的重要信号。
+  本项目主要用于个人/团队自用，App Store 风险属可接受范围。
 
 - **电量 / 用户体验**：周期性滴答音每 3s 一次，每次 20ms，对电量影响极小；
   音量由用户系统音量控制；用户可从 UI 看到"心跳：开启"状态并预期到声音存在。
