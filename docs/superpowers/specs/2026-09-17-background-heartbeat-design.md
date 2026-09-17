@@ -36,6 +36,9 @@ iOS 唯一允许"长时间后台运行任意任务"的合法模式之一是 `UIB
 - 修改 `ContentView`：
   - 新增"心跳提示音" toggle（默认开启，proxy 运行前/后都可切换）
   - 状态行显示 "心跳：开启/关闭（后台时）"
+- 修改 `SettingsView`：
+  - 新增"心跳音量" Slider（0.0 - 1.0，默认 0.3）
+  - 持久化到 `UserDefaults`，key: `heartbeatVolume`
 - 修改 Xcode project 把 `UIBackgroundModes=audio` 注入 Info.plist。
 
 **不做：**
@@ -58,18 +61,24 @@ final class AudioHeartbeat {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var timer: DispatchSourceTimer?
+    private var volume: Float = 0.3   // 默认 30%
 
-    func start() throws          // 配置 session、激活、起 engine、起 timer
-    func stop()                  // 停 timer、停 player、停 engine、反激活 session
+    func start() throws                              // 配置 session、激活、起 engine、起 timer
+    func stop()                                      // 停 timer、停 player、停 engine、反激活 session
+    func updateVolume(_ value: Float)                // 重新合成 buffer，下一拍生效
 }
 ```
 
 - **滴答音合成**：用一个 100ms 的 `AVAudioPCMBuffer`（单声道、44.1kHz、Float32），
-  在前 20ms 写入一个 500Hz 正弦波（带 5ms 淡入淡出），振幅 0.1；其余样本为 0。
+  在前 20ms 写入一个 500Hz 正弦波（带 5ms 淡入淡出），振幅为**用户配置的音量**（默认 0.3）；
+  其余样本为 0。
 - **调度方式**：每次 timer 触发时 `player.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)`，
   然后 `player.play()`；播放完毕后 player 自然停在 idle。
 - **周期**：`DispatchSourceTimer`，每 3 秒触发一次。
-- **音量**：`mainMixer.outputVolume = 1.0`（保留淡入淡出后的真实输出），用户系统音量自然控制最终响度。
+- **音量实现**：buffer 内的正弦波振幅按 `UserDefaults.standard.double(forKey: "heartbeatVolume")` 写入；
+  `mainMixer.outputVolume = 1.0`（保留样本内的真实振幅），用户系统音量自然控制最终响度。
+- **运行时调音量**：用户在 SettingsView 拖动 Slider → 写入 `UserDefaults` →
+  `AudioHeartbeat.shared.updateVolume(newValue)` → 重新合成并替换 buffer（下一拍生效）。
 - **中断恢复**：监听 `AVAudioSession.interruptionNotification`，中断结束后若仍处于 `isRunning`
   状态，重新 `engine.start()` 并恢复 timer。
 - **节流**：player 仅在 scheduleBuffer 之后短暂 play，避免持续占用 audio render thread。
@@ -97,7 +106,7 @@ AudioHeartbeat.shared.stop()
 
 ### `ContentView` 改动
 
-- `@State private var heartbeatOn: Bool = true`（默认开启；持久化到 `UserDefaults`）
+- `@AppStorage("heartbeatEnabled") private var heartbeatOn: Bool = true`（默认开启）
 - `@State private var heartbeatRunning: Bool = false`（来自 `AudioHeartbeat.shared.isRunning`）
 - UI 元素：
   - 状态行副文字：`isRunning ? (heartbeatRunning ? "心跳：开启（后台时）" : "心跳：关闭（后台时）") : ""`
@@ -105,6 +114,32 @@ AudioHeartbeat.shared.stop()
 - 切换逻辑：proxy 运行时 `heartbeatOn` 的变化立即调用 `AudioHeartbeat.shared.start()/stop()`；
   proxy 停止时仅更新 `heartbeatOn` 持久值，下次启动时按此值决定是否启心跳。
 - 文案：直接 hardcode（与项目内现有 hardcode 风格一致）。
+
+### `SettingsView` 改动
+
+在现有 Form 内追加一个 Section：
+
+```
+Section {
+    Slider(value: $heartbeatVolume, in: 0.0...1.0, step: 0.05) {
+        Text("心跳音量")
+    }
+    HStack {
+        Text("预览")
+        Spacer()
+        Text("\(Int(heartbeatVolume * 100))%")
+            .foregroundColor(.secondary)
+    }
+} header: {
+    Text("后台心跳")
+} footer: {
+    Text("锁屏后代理保持连接时会播放此音量的提示音。设为 0% 可静音。")
+}
+```
+
+- `@AppStorage("heartbeatVolume") private var heartbeatVolume: Double = 0.3`
+- `Slider` onChange 立即调用 `AudioHeartbeat.shared.updateVolume(Float(heartbeatVolume))`
+  （若 proxy 未运行则只更新持久值，下次启动生效）
 
 ## 生命周期与数据流
 
@@ -158,6 +193,7 @@ AVAudioSession.interruptionNotification (ended)
 | 心跳启动但 proxy 未启动 | 不会出现：心跳仅在 proxy start 内被调用 |
 | 用户在 proxy 运行中关闭心跳 toggle | 立即 `AudioHeartbeat.shared.stop()`；proxy 继续运行，但锁屏后会被挂起 |
 | 用户在 proxy 运行中开启心跳 toggle | 立即 `AudioHeartbeat.shared.start()` |
+| 用户在 SettingsView 拖动音量 Slider | `AudioHeartbeat.shared.updateVolume()`，下一拍滴答生效；proxy 未运行时仅持久化 |
 
 ## Info.plist 改动
 
@@ -180,6 +216,7 @@ INFOPLIST_KEY_UIBackgroundModes = "audio";
 | `HttpRelay/AudioHeartbeat.swift` | 新增 | AVAudioEngine 心跳封装 |
 | `HttpRelay/ProxyServer.swift` | 修改 | start/stop 中按开关状态 hook AudioHeartbeat；暴露 `heartbeatEnabled` |
 | `HttpRelay/ContentView.swift` | 修改 | 心跳 toggle、状态行副文字 "心跳：开启/关闭（后台时）" |
+| `HttpRelay/SettingsView.swift` | 修改 | 新增"心跳音量" Slider 段 |
 | `HttpRelay.xcodeproj/project.pbxproj` | 修改 | 添加 `INFOPLIST_KEY_UIBackgroundModes = "audio"` |
 
 不改动：`LogStore.swift`、`LogEntry.swift`、`TunnelManager.swift`、`HttpRelayApp.swift`。
@@ -205,6 +242,12 @@ xcodebuild -project HttpRelay.xcodeproj -scheme HttpRelay \
    - 启动 proxy → 关闭"心跳提示音"toggle → 锁屏 → 等待 60s
    - 预期：锁屏后 proxy 挂起，新连接不响应；回到前台后恢复
    - 再开启 toggle → 锁屏 → 预期：保持连接
+
+3. **心跳音量**
+   - 启动 proxy → 进入 Settings → 把音量拖到 0% → 回到主界面听 10 秒
+   - 预期：完全静音
+   - 把音量拖到 100% → 预期：滴答音明显可听
+   - 把音量拖到 30%（默认）→ 预期：能听到但不影响日常
 
 3. **心跳启动失败的降级路径**
    - 模拟音频会话被其他 App 占用、`setActive` 抛错的场景（如有 `am instrument` 工具可用）
