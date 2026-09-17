@@ -29,6 +29,7 @@ struct ContentView: View {
                             if newValue {
                                 let port = UInt16(portString) ?? 10808
                                 proxyServer = ProxyServer(port: port, logStore: logStore)
+                                ProxyServer.shared = proxyServer
                                 proxyServer?.onLocalIPReady = { [self] ip in
                                     localIP = ip
                                 }
@@ -56,6 +57,7 @@ struct ContentView: View {
                                 }
                             } else {
                                 proxyServer?.stop()
+                                ProxyServer.shared = nil
                                 proxyServer = nil
                                 isRunning = false
                                 startTime = nil
@@ -140,6 +142,15 @@ struct ContentView: View {
                 .padding(.top, 4)
             }
             .padding()
+            .onChange(of: proxyServer?.isRunning ?? false) { _, newValue in
+                if !newValue && isRunning {
+                    isRunning = false
+                    startTime = nil
+                    timer?.invalidate()
+                    timer = nil
+                    UIApplication.shared.isIdleTimerDisabled = false
+                }
+            }
             .navigationBarTitleDisplayMode(.inline)
             .navigationTitle(Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? "HTTP Debugger")
             .toolbar {
