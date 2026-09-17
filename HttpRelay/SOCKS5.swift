@@ -507,7 +507,9 @@ final class SOCKS5UDPRelay {
                 if let error = error {
                     print("[SOCKS5UDPRelay] send error → \(error)")
                 } else {
-                    Task { @MainActor in self?.logStore.addTxBytes(count) }
+                    Task { @MainActor [weak self] in
+                        self?.logStore.addTxBytes(count)
+                    }
                 }
             })
             return

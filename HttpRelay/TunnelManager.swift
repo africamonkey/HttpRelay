@@ -46,7 +46,7 @@ final class TunnelManager {
         print("[TunnelManager] endpoint created: \(endpoint)")
         let parameters = Self.makeTCPParameters()
         serverConnection = NWConnection(to: endpoint, using: parameters)
-        print("[TunnelManager] serverConnection created, state: \(serverConnection?.state)")
+        print("[TunnelManager] serverConnection created, state: \(serverConnection?.state ?? .setup)")
 
         scheduleConnectionTimeout()
 
@@ -95,8 +95,6 @@ final class TunnelManager {
                 }
             case .preparing:
                 print("[TunnelManager] server connection preparing...")
-            case .waiting(let error):
-                print("[TunnelManager] server connection waiting: \(error)")
             default:
                 print("[TunnelManager] server connection state: \(state)")
                 break
@@ -189,8 +187,6 @@ final class TunnelManager {
                 }
             case .preparing:
                 print("[TunnelManager] startAsProxy server preparing...")
-            case .waiting(let error):
-                print("[TunnelManager] startAsProxy server waiting: \(error)")
             default:
                 break
             }
@@ -317,7 +313,7 @@ final class TunnelManager {
         Task { @MainActor in
             self.logStore.addTxBytes(data.count, to: self.logEntry)
         }
-        serverConnection?.send(content: data, completion: .contentProcessed { [weak self] error in
+        serverConnection?.send(content: data, completion: .contentProcessed { error in
             if let error = error {
                 print("[TunnelManager] sendToServer error: \(error)")
                 return

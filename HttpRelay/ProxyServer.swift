@@ -31,7 +31,6 @@ final class ProxyServer {
     }
 
     private func getLocalIPAddress() -> String? {
-        var address: String?
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
         defer { freeifaddrs(ifaddr) }
@@ -195,7 +194,7 @@ final class ProxyServer {
 
             print("[ProxyServer] receiveHTTPRequest callback: data.count=\(data?.count ?? -1), isComplete=\(isComplete), error=\(error?.localizedDescription ?? "nil")")
 
-            if let error = error {
+            if error != nil {
                 print("[ProxyServer] receiveHTTPRequest: error, cancelling")
                 connection.cancel()
                 return
@@ -210,7 +209,7 @@ final class ProxyServer {
             if let data = data, !data.isEmpty {
                 print("[ProxyServer] receiveHTTPRequest: received \(data.count) bytes, checking if tunnel exists...")
 
-                if let tunnelKey = self.findTunnelKey(for: connection) {
+                if self.findTunnelKey(for: connection) != nil {
                     print("[ProxyServer] receiveHTTPRequest: forwarding \(data.count) bytes to existing tunnel")
                     self.forwardToTunnel(connection: connection, data: data)
                 } else if let request = String(data: data, encoding: .utf8) {
@@ -380,7 +379,6 @@ final class ProxyServer {
             fullPath = path
         }
 
-        let lines = request.split(separator: "\r\n")
         var headers = parseHeaders(from: request)
         headers["Host"] = headers["Host"] ?? tunnelManager.host
 
@@ -500,7 +498,7 @@ final class ProxyServer {
         print("[ProxyServer] sending 200 Connection Established")
         let response = "HTTP/1.1 200 Connection Established\r\n\r\n"
         if let data = response.data(using: .utf8) {
-            connection.send(content: data, completion: .contentProcessed { [weak self] error in
+            connection.send(content: data, completion: .contentProcessed { error in
                 if let error = error {
                     print("[ProxyServer] send response error: \(error)")
                 } else {
