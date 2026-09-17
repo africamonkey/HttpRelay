@@ -1,10 +1,11 @@
 import SwiftUI
 import UIKit
+import Combine
 
 struct ContentView: View {
     @State private var isRunning = false
     @StateObject private var logStore = LogStore()
-    @State private var proxyServer: ProxyServer?
+    @StateObject private var proxyServerHolder = ProxyServerHolder()
     @State private var connectionCount: Int = 0
     @State private var errorMessage: String?
     @State private var txBytes: Int64 = 0
@@ -25,47 +26,7 @@ struct ContentView: View {
                 HStack {
                     Toggle("Enable Debugger Server", isOn: Binding(
                         get: { isRunning },
-                        set: { newValue in
-                            if newValue {
-                                let port = UInt16(portString) ?? 10808
-                                proxyServer = ProxyServer(port: port, logStore: logStore)
-                                ProxyServer.shared = proxyServer
-                                proxyServer?.onLocalIPReady = { [self] ip in
-                                    localIP = ip
-                                }
-                                do {
-                                    try proxyServer?.start()
-                                    isRunning = true
-                                    startTime = Date()
-                                    uptimeString = "00:00:00"
-                                    if showTutorialOnStart {
-                                        showTutorial = true
-                                    }
-                                    timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-                                        if let start = startTime {
-                                            let elapsed = Int(Date().timeIntervalSince(start))
-                                            let hours = elapsed / 3600
-                                            let minutes = (elapsed % 3600) / 60
-                                            let seconds = elapsed % 60
-                                            uptimeString = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
-                                        }
-                                    }
-                                    UIApplication.shared.isIdleTimerDisabled = true
-                                } catch {
-                                    errorMessage = "Failed to start debugger: \(error.localizedDescription)"
-                                    isRunning = false
-                                }
-                            } else {
-                                proxyServer?.stop()
-                                ProxyServer.shared = nil
-                                proxyServer = nil
-                                isRunning = false
-                                startTime = nil
-                                timer?.invalidate()
-                                timer = nil
-                                UIApplication.shared.isIdleTimerDisabled = false
-                            }
-                        }
+                        set: { newValue in toggleProxy(newValue) }
                     ))
                     .toggleStyle(SwitchToggleStyle(tint: .green))
                 }
@@ -142,7 +103,7 @@ struct ContentView: View {
                 .padding(.top, 4)
             }
             .padding()
-            .onChange(of: proxyServer?.isRunning ?? false) { _, newValue in
+            .onChange(of: proxyServerHolder.server?.isRunning ?? false) { newValue in
                 if !newValue && isRunning {
                     isRunning = false
                     startTime = nil
@@ -276,6 +237,49 @@ struct ContentView: View {
 
     private func clearLogs() {
         logStore.clear()
+    }
+
+    private func toggleProxy(_ newValue: Bool) {
+        if newValue {
+            let port = UInt16(portString) ?? 10808
+            let server = ProxyServer(port: port, logStore: logStore)
+            proxyServerHolder.server = server
+            ProxyServer.shared = server
+            server.onLocalIPReady = { ip in
+                localIP = ip
+            }
+            do {
+                try server.start()
+                isRunning = true
+                startTime = Date()
+                uptimeString = "00:00:00"
+                if showTutorialOnStart {
+                    showTutorial = true
+                }
+                timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
+                    if let start = startTime {
+                        let elapsed = Int(Date().timeIntervalSince(start))
+                        let hours = elapsed / 3600
+                        let minutes = (elapsed % 3600) / 60
+                        let seconds = elapsed % 60
+                        uptimeString = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+                    }
+                }
+                UIApplication.shared.isIdleTimerDisabled = true
+            } catch {
+                errorMessage = "Failed to start debugger: \(error.localizedDescription)"
+                isRunning = false
+            }
+        } else {
+            proxyServerHolder.server?.stop()
+            ProxyServer.shared = nil
+            proxyServerHolder.server = nil
+            isRunning = false
+            startTime = nil
+            timer?.invalidate()
+            timer = nil
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
     }
 }
 
@@ -521,4 +525,8 @@ struct LogDetailView: View {
 
 #Preview {
     ContentView()
+}
+
+final class ProxyServerHolder: ObservableObject {
+    @Published var server: ProxyServer?
 }

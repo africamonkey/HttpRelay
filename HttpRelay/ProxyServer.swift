@@ -1,9 +1,8 @@
 import Foundation
 import Network
-import Observation
+import Combine
 
-@Observable
-final class ProxyServer {
+final class ProxyServer: ObservableObject {
     typealias ConnectionHandler = (NWConnection) -> Void
 
     private let port: UInt16
@@ -12,11 +11,11 @@ final class ProxyServer {
     private let socks5Server: SOCKS5Server
     private var activeTunnels: [String: TunnelManager] = [:]
     private let tunnelsLock = NSLock()
-    private(set) var localIP: String = "—"
+    @Published private(set) var localIP: String = "—"
 
     var onLocalIPReady: ((String) -> Void)?
 
-    private(set) var isRunning: Bool = false
+    @Published private(set) var isRunning: Bool = false
 
     static var shared: ProxyServer?
 

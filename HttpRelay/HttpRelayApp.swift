@@ -8,7 +8,7 @@ struct HttpRelayApp: App {
         WindowGroup {
             ContentView()
         }
-        .onChange(of: scenePhase) { _, newPhase in
+        .onChange(of: scenePhase) { newPhase in
             switch newPhase {
             case .background:
                 BackgroundKeepaliveCoordinator.shared.start()
