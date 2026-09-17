@@ -1,6 +1,8 @@
 import Foundation
 import Network
+import Observation
 
+@Observable
 final class ProxyServer {
     typealias ConnectionHandler = (NWConnection) -> Void
 
@@ -13,6 +15,10 @@ final class ProxyServer {
     private(set) var localIP: String = "—"
 
     var onLocalIPReady: ((String) -> Void)?
+
+    private(set) var isRunning: Bool = false
+
+    static var shared: ProxyServer?
 
     init(port: UInt16 = 10808, logStore: LogStore) {
         self.port = port
@@ -87,12 +93,14 @@ final class ProxyServer {
         }
 
         listener?.start(queue: .main)
+        isRunning = true
     }
 
     func stop() {
         listener?.cancel()
         listener = nil
         socks5Server.stop()
+        isRunning = false
     }
 
     private func handleNewConnection(_ connection: NWConnection) {
