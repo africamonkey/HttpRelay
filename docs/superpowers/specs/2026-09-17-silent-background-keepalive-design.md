@@ -98,13 +98,25 @@ struct HttpRelayApp: App {
 
 ### `ProxyServer` changes (file: `HttpRelay/ProxyServer.swift`)
 
-Expose a singleton accessor so the coordinator can call `stop()`:
+Two changes:
+
+1. Make the class `@Observable` (mirrors the `LogStore` pattern) so `isRunning` updates propagate to SwiftUI views automatically.
+
+2. Expose:
+   - `private(set) var isRunning: Bool = false` — set to `true` in `start()` after listener is ready, set to `false` in `stop()`.
+   - `static var shared: ProxyServer?` — a mutable singleton slot.
+
+**`ProxyServer` is now observed by ContentView**, so when the expiration handler calls `ProxyServer.shared?.stop()`, the `isRunning` flag flips to `false` and ContentView re-renders automatically — no manual sync needed.
+
+**ContentView wiring** (must add these two lines):
 
 ```swift
-static let shared: ProxyServer? = nil  // set by ContentView when proxy starts; cleared on stop
-```
+// In the Toggle's setter, when proxy starts:
+ProxyServer.shared = proxyServer
 
-Add a public `isRunning: Bool` flag (already has `isStarted` private — make it readable or add a public computed property).
+// In the Toggle's setter, when proxy stops:
+ProxyServer.shared = nil
+```
 
 ## Data flow
 
@@ -136,7 +148,9 @@ iOS calls expiration handler (on main thread)
             → NWListener.cancel
             → socks5Server.stop()
             → UIApplication.isIdleTimerDisabled = false
-            → ContentView shows "Stopped" (existing toggle logic)
+            → proxyServer.isRunning = false
+                → ContentView observes via @Observable, re-renders
+                → Status text flips to "Stopped", toggle flips off
 ```
 
 ## Lifecycle and Error Handling
@@ -158,11 +172,12 @@ iOS calls expiration handler (on main thread)
 
 | File | Status | Description |
 |---|---|---|
-| `HttpRelay/BackgroundKeepaliveCoordinator.swift` | **NEW** | Singleton coordinating `beginBackgroundTask` calls |
+| `HttpRelay/BackgroundKeepaliveCoordinator.swift` | **NEW** | `@MainActor` singleton coordinating `beginBackgroundTask` calls |
 | `HttpRelay/HttpRelayApp.swift` | Modify | Add `@Environment(\.scenePhase)` and `onChange` switch |
-| `HttpRelay/ProxyServer.swift` | Modify | Add public `isRunning` accessor + singleton hook for the coordinator |
+| `HttpRelay/ProxyServer.swift` | Modify | Add `@Observable` + `private(set) var isRunning: Bool = false` + `static var shared: ProxyServer?` |
+| `HttpRelay/ContentView.swift` | Modify | Set `ProxyServer.shared = proxyServer` when enabling, `= nil` when disabling; observe `proxyServer.isRunning` reactively |
 
-**Not touched:** `ContentView.swift`, `SettingsView.swift`, `LogStore.swift`, `LogEntry.swift`, `TunnelManager.swift`, `SOCKS5.swift`, `TutorialView.swift`, `AboutView.swift`, `Info.plist`.
+**Not touched:** `SettingsView.swift`, `LogStore.swift`, `LogEntry.swift`, `TunnelManager.swift`, `SOCKS5.swift`, `TutorialView.swift`, `AboutView.swift`, `Info.plist`.
 
 ## Testing / Verification
 
@@ -208,7 +223,7 @@ Not introduced. Consistent with project convention.
 
 - **iOS may reduce background time below 30s under resource pressure.** Acceptable — the expiration handler stops the proxy cleanly.
 - **ScenePhase transitions can fire in unexpected sequences.** The `guard` checks in the coordinator handle the common cases. If iOS fires `.background` twice without an intervening `.active`, the second call is a no-op (taskID already set). Acceptable.
-- **`ProxyServer.shared` requires the user to set the singleton in ContentView.** This adds a coupling. Alternative: pass a callback to the coordinator. We pick the singleton for simplicity; it's already a single-instance object per session.
+- **`ProxyServer.shared` is set by ContentView, not by the coordinator.** This is a small coupling, but matches the existing pattern (ContentView owns the proxy lifecycle). If the singleton is `nil` when `start()` is called, the coordinator's first `guard` short-circuits — no harm done.
 
 ## Reference
 
