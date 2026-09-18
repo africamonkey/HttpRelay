@@ -25,6 +25,17 @@ final class ProxyServer: ObservableObject {
         self.socks5Server = SOCKS5Server(logStore: logStore)
     }
 
+    /// Synchronously perform `body` while holding `tunnelsLock`. Use a helper
+    /// so callers in async contexts (e.g. `Task { @MainActor in … }`) do not
+    /// invoke `NSLock.lock()/unlock()` directly, which Swift 6 strict
+    /// concurrency disallows.
+    @discardableResult
+    private func withTunnelsLock<T>(_ body: () -> T) -> T {
+        tunnelsLock.lock()
+        defer { tunnelsLock.unlock() }
+        return body()
+    }
+
     var boundPort: NWEndpoint.Port? {
         return listener?.port
     }
@@ -281,7 +292,8 @@ final class ProxyServer: ObservableObject {
             let requestHeaders = parseHeaders(from: request)
 
             print("[ProxyServer] processRequest: CONNECT to \(host):\(port), path=\(path)")
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
+                guard let self = self else { return }
                 let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
                 logStore.incrementConnections()
                 do {
@@ -336,9 +348,7 @@ final class ProxyServer: ObservableObject {
             )
 
             let key = "\(host):\(port):\(ObjectIdentifier(connection as AnyObject))"
-            tunnelsLock.lock()
-            activeTunnels[key] = tunnelManager
-            tunnelsLock.unlock()
+            self.withTunnelsLock { self.activeTunnels[key] = tunnelManager }
 
             tunnelManager.onConnected = { [weak self] in
                 guard let self = self else { return }
@@ -354,9 +364,7 @@ final class ProxyServer: ObservableObject {
                 if let self = self {
                     self.logStore.completeEntry(logEntry)
                     self.logStore.decrementConnections()
-                    self.tunnelsLock.lock()
-                    self.activeTunnels.removeValue(forKey: key)
-                    self.tunnelsLock.unlock()
+                    self.withTunnelsLock { self.activeTunnels.removeValue(forKey: key) }
                 }
             }
 
@@ -365,9 +373,7 @@ final class ProxyServer: ObservableObject {
                 if let self = self {
                     self.logStore.failEntry(logEntry)
                     self.logStore.decrementConnections()
-                    self.tunnelsLock.lock()
-                    self.activeTunnels.removeValue(forKey: key)
-                    self.tunnelsLock.unlock()
+                    self.withTunnelsLock { self.activeTunnels.removeValue(forKey: key) }
                 }
             }
 
@@ -456,9 +462,7 @@ final class ProxyServer: ObservableObject {
         )
 
         let key = "\(host):\(port):\(ObjectIdentifier(clientConnection as AnyObject))"
-        tunnelsLock.lock()
-        activeTunnels[key] = tunnelManager
-        tunnelsLock.unlock()
+        withTunnelsLock { activeTunnels[key] = tunnelManager }
 
         tunnelManager.onConnected = { [weak self] in
             print("[ProxyServer] onConnected callback fired for \(host):\(port)")
@@ -474,9 +478,7 @@ final class ProxyServer: ObservableObject {
             if let self = self {
                 self.logStore.completeEntry(logEntry)
                 self.logStore.decrementConnections()
-                self.tunnelsLock.lock()
-                self.activeTunnels.removeValue(forKey: key)
-                self.tunnelsLock.unlock()
+                self.withTunnelsLock { self.activeTunnels.removeValue(forKey: key) }
             }
         }
 
@@ -488,9 +490,7 @@ final class ProxyServer: ObservableObject {
                 // Reply to the client with 502 so HTTP clients see a proper
                 // status line instead of a silent close.
                 self.sendErrorResponse(clientConnection, code: "502 Bad Gateway")
-                self.tunnelsLock.lock()
-                self.activeTunnels.removeValue(forKey: key)
-                self.tunnelsLock.unlock()
+                self.withTunnelsLock { self.activeTunnels.removeValue(forKey: key) }
             }
         }
 

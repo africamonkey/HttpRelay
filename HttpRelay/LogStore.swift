@@ -115,7 +115,6 @@ final class LogStore: ObservableObject {
             if entries[index].duration == nil {
                 entries[index].duration = Date().timeIntervalSince(entries[index].timestamp)
             }
-            recomputeFilteredEntries()
         }
     }
 
@@ -125,7 +124,6 @@ final class LogStore: ObservableObject {
             if entries[index].duration == nil {
                 entries[index].duration = Date().timeIntervalSince(entries[index].timestamp)
             }
-            recomputeFilteredEntries()
         }
     }
 
