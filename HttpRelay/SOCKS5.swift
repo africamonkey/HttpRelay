@@ -65,6 +65,10 @@ enum SOCKS5Parser {
 final class SOCKS5Server {
     private let logStore: LogStore
     private let queue = DispatchQueue(label: "com.httprelay.socks5")
+    /// Guards `udpRelay` and `localIP`. They are written from the main
+    /// thread (the proxy publishes the LAN address) and read from the
+    /// connection's queue, so they need a lock.
+    private let stateLock = NSLock()
     private var udpRelay: SOCKS5UDPRelay?
     private var localIP: String = "0.0.0.0"
 
@@ -78,6 +82,8 @@ final class SOCKS5Server {
     /// causes strict clients (Firefox, Chrome) to immediately abort
     /// ICE because they have nowhere valid to send UDP.
     func setLocalIP(_ ip: String) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
         self.localIP = ip
     }
 
@@ -102,8 +108,12 @@ final class SOCKS5Server {
 
     /// Stop accepting new work.
     func stop() {
-        udpRelay?.stop()
+        stateLock.lock()
+        let relay = udpRelay
         udpRelay = nil
+        stateLock.unlock()
+
+        relay?.stop()
     }
 
     private func receiveGreeting(_ connection: NWConnection) {
@@ -228,18 +238,27 @@ final class SOCKS5Server {
 
     private func handleUDPAssociate(_ connection: NWConnection) {
         do {
-            let relay = udpRelay ?? SOCKS5UDPRelay(logStore: logStore)
-            if udpRelay == nil { udpRelay = relay }
+            stateLock.lock()
+            let relay: SOCKS5UDPRelay
+            if let existing = udpRelay {
+                relay = existing
+            } else {
+                relay = SOCKS5UDPRelay(logStore: logStore)
+                udpRelay = relay
+            }
+            let address = localIP
+            stateLock.unlock()
+
             let port = try relay.start()
             var reply = Data([0x05, 0x00, 0x00, 0x01])
-            let parts = localIP.split(separator: ".").compactMap { UInt8($0) }
+            let parts = address.split(separator: ".").compactMap { UInt8($0) }
             if parts.count == 4 {
                 reply.append(contentsOf: parts)
             } else {
                 reply.append(contentsOf: [0, 0, 0, 0])
             }
             reply.append(contentsOf: [UInt8(port.rawValue >> 8), UInt8(port.rawValue & 0xff)])
-            print("[SOCKS5] UDP_ASSOCIATE → \(localIP):\(port.rawValue)")
+            print("[SOCKS5] UDP_ASSOCIATE → \(address):\(port.rawValue)")
             connection.send(content: reply, completion: .contentProcessed { error in
                 if error != nil { connection.cancel(); return }
             })

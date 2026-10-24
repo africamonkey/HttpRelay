@@ -38,13 +38,24 @@ struct ContentView: View {
                 .onPreferenceChange(TopBlockHeightKey.self) { topBlockHeight = $0 }
                 .onPreferenceChange(BottomBlockHeightKey.self) { bottomBlockHeight = $0 }
             }
+            .onChange(of: proxyServerHolder.server?.failureMessage ?? nil) { newValue in
+                guard let newValue else { return }
+                ProxyServer.shared = nil
+                BackgroundKeepaliveCoordinator.shared.stop()
+                resetRunningState()
+                errorMessage = newValue
+            }
             .onChange(of: proxyServerHolder.server?.isRunning ?? false) { newValue in
-                if !newValue && isRunning {
-                    isRunning = false
-                    startTime = nil
-                    timer?.invalidate()
-                    timer = nil
-                    UIApplication.shared.isIdleTimerDisabled = false
+                if newValue {
+                    // The server is up. The setup guide is presented now
+                    // rather than while the user is tapping the toggle: it is
+                    // an expensive sheet to build, and the toggle should
+                    // respond instantly.
+                    if showTutorialOnStart {
+                        showTutorial = true
+                    }
+                } else if isRunning {
+                    resetRunningState()
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
@@ -390,46 +401,68 @@ struct ContentView: View {
         logStore.clear()
     }
 
+    /// Puts the screen back into the "stopped" state.
+    ///
+    /// Every way out of "running" goes through here: the user switching the
+    /// toggle off, the server failing to start, and the server stopping on
+    /// its own. Otherwise the uptime timer would keep running and the
+    /// device would never lock itself.
+    private func resetRunningState() {
+        isRunning = false
+        startTime = nil
+        timer?.invalidate()
+        timer = nil
+        UIApplication.shared.isIdleTimerDisabled = false
+    }
+
     private func toggleProxy(_ newValue: Bool) {
         if newValue {
             let port = UInt16(portString) ?? 10808
             let server = ProxyServer(port: port, logStore: logStore)
-            proxyServerHolder.server = server
+            proxyServerHolder.attach(server)
             ProxyServer.shared = server
             server.onLocalIPReady = { ip in
                 localIP = ip
             }
-            do {
-                try server.start()
-                isRunning = true
-                startTime = Date()
-                uptimeString = "00:00:00"
-                if showTutorialOnStart {
-                    showTutorial = true
+
+            // The UI reacts immediately. The listener itself is created on a
+            // background queue, because creating the first listener of a
+            // process takes tens of milliseconds.
+            isRunning = true
+            startTime = Date()
+            uptimeString = "00:00:00"
+            timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+                if let start = startTime {
+                    let elapsed = Int(Date().timeIntervalSince(start))
+                    let hours = elapsed / 3600
+                    let minutes = (elapsed % 3600) / 60
+                    let seconds = elapsed % 60
+                    uptimeString = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
                 }
-                timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                    if let start = startTime {
-                        let elapsed = Int(Date().timeIntervalSince(start))
-                        let hours = elapsed / 3600
-                        let minutes = (elapsed % 3600) / 60
-                        let seconds = elapsed % 60
-                        uptimeString = String(format: "%02d:%02d:%02d", hours, minutes, seconds)
+            }
+            UIApplication.shared.isIdleTimerDisabled = true
+
+            // The run is registered here, on the main thread, so that a
+            // switch-off while the listener is being created wins over the
+            // pending start.
+            let runID = server.beginRun()
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try server.start(runID: runID)
+                } catch {
+                    DispatchQueue.main.async {
+                        ProxyServer.shared = nil
+                        BackgroundKeepaliveCoordinator.shared.stop()
+                        self.resetRunningState()
+                        self.errorMessage = "Failed to start debugger: \(error.localizedDescription)"
                     }
                 }
-                UIApplication.shared.isIdleTimerDisabled = true
-            } catch {
-                errorMessage = "Failed to start debugger: \(error.localizedDescription)"
-                isRunning = false
             }
         } else {
             proxyServerHolder.server?.stop()
             ProxyServer.shared = nil
-            proxyServerHolder.server = nil
-            isRunning = false
-            startTime = nil
-            timer?.invalidate()
-            timer = nil
-            UIApplication.shared.isIdleTimerDisabled = false
+            proxyServerHolder.detach()
+            resetRunningState()
         }
     }
 }
@@ -673,8 +706,28 @@ struct LogDetailView: View {
     ContentView()
 }
 
+/// Holds the running proxy server.
+///
+/// The holder republishes the server's changes: reading
+/// `holder.server?.isRunning` in a view body only subscribes the view to
+/// the holder, not to the server, so without the forwarding the
+/// `onChange` handlers would only fire when something else happened to
+/// re-evaluate the body.
 final class ProxyServerHolder: ObservableObject {
     @Published var server: ProxyServer?
+    private var serverChanges: AnyCancellable?
+
+    func attach(_ newServer: ProxyServer?) {
+        server = newServer
+        serverChanges = newServer?.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
+
+    func detach() {
+        serverChanges = nil
+        server = nil
+    }
 }
 
 /// Height of a block of the layout, tagged with the layout it was measured in.

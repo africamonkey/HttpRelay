@@ -11,7 +11,22 @@ final class ProxyServer: ObservableObject {
     private let socks5Server: SOCKS5Server
     private var activeTunnels: [String: TunnelManager] = [:]
     private let tunnelsLock = NSLock()
+    /// Guards `listener`, `wantsToRun` and `runID`. `start(runID:)` runs on
+    /// a background queue, so it can race with `stop()` on the main thread.
+    private let lifecycleLock = NSLock()
+    /// False once `stop()` was called, so a listener that is still being
+    /// created gets cancelled instead of left running.
+    private var wantsToRun = false
+    /// Bumped by every `stop()`. A start attempt carries the value it was
+    /// given when the run was requested; if the value has changed by the
+    /// time the listener exists, the server was stopped in the meantime
+    /// and the start must not take effect.
+    private var runID: UInt64 = 0
     @Published private(set) var localIP: String = "—"
+
+    /// Set when the listener could not be brought up (e.g. the port is
+    /// already taken). `nil` while the server is healthy.
+    @Published private(set) var failureMessage: String?
 
     var onLocalIPReady: ((String) -> Void)?
 
@@ -37,6 +52,8 @@ final class ProxyServer: ObservableObject {
     }
 
     var boundPort: NWEndpoint.Port? {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
         return listener?.port
     }
 
@@ -49,11 +66,13 @@ final class ProxyServer: ObservableObject {
 
         for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
             let interface = ptr.pointee
-            let addrFamily = interface.ifa_addr.pointee.sa_family
+            // `ifa_addr` is NULL for interfaces without an address.
+            guard let address = interface.ifa_addr else { continue }
+            let addrFamily = address.pointee.sa_family
             if addrFamily == UInt8(AF_INET) {
                 let name = String(cString: interface.ifa_name)
                 var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                getnameinfo(interface.ifa_addr, socklen_t(interface.ifa_addr.pointee.sa_len),
+                getnameinfo(address, socklen_t(address.pointee.sa_len),
                            &hostname, socklen_t(hostname.count),
                            nil, socklen_t(0), NI_NUMERICHOST)
                 addresses[name] = String(cString: hostname)
@@ -74,40 +93,148 @@ final class ProxyServer: ObservableObject {
         return nil
     }
 
-    func start() throws {
+    /// Registers the intent to run the server and returns the id of this run.
+    ///
+    /// Call this on the thread that owns the server, *before* dispatching
+    /// `start(runID:)` to a background queue. That way a `stop()` the user
+    /// triggers in the meantime wins over the pending start: `stop()` bumps
+    /// the run id, so the pending start notices that it was cancelled and
+    /// never brings the listener up.
+    func beginRun() -> UInt64 {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        wantsToRun = true
+        return runID
+    }
+
+    /// Creates the listener and starts it.
+    ///
+    /// Creating the first `NWListener` of a process initialises the Network
+    /// framework and takes tens of milliseconds, so this must not run on the
+    /// main thread. The listener is created and started on the calling
+    /// thread; the state handler runs on the main queue. The `id` comes
+    /// from `beginRun()`.
+    func start(runID id: UInt64) throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
 
-        listener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        let newListener: NWListener
+        do {
+            newListener = try NWListener(using: parameters, on: NWEndpoint.Port(rawValue: port)!)
+        } catch {
+            reportFailure(error, for: nil)
+            throw error
+        }
 
-        listener?.stateUpdateHandler = { [weak self] state in
+        newListener.stateUpdateHandler = { [weak self] state in
             guard let self = self else { return }
             switch state {
             case .ready:
                 print("[ProxyServer] listening on port \(self.port)")
-                self.localIP = self.getLocalIPAddress() ?? "—"
-                print("[ProxyServer] local IP: \(self.localIP)")
-                self.socks5Server.setLocalIP(self.localIP)
-                self.onLocalIPReady?(self.localIP)
+                self.publishLocalIP(for: newListener)
             case .failed(let error):
                 print("[ProxyServer] failed: \(error)")
+                self.reportFailure(error, for: newListener)
             default:
                 break
             }
         }
 
-        listener?.newConnectionHandler = { [weak self] connection in
+        newListener.newConnectionHandler = { [weak self] connection in
             print("[ProxyServer] new connection from \(connection.endpoint)")
-            self?.handleNewConnection(connection)
+            guard let self = self else {
+                connection.cancel()
+                return
+            }
+            self.handleNewConnection(connection)
         }
 
-        listener?.start(queue: .main)
-        isRunning = true
+        // The user may have switched the server off while the listener was
+        // being created. In that case nobody is going to cancel it.
+        lifecycleLock.lock()
+        guard wantsToRun, runID == id else {
+            lifecycleLock.unlock()
+            newListener.cancel()
+            return
+        }
+        let previous = listener
+        listener = newListener
+        lifecycleLock.unlock()
+
+        previous?.cancel()
+        newListener.start(queue: .main)
     }
 
+    /// Starts the server on the calling thread.
+    ///
+    /// Convenience for callers that are already off the main thread (the
+    /// tests). `beginRun()` has to run before the work is dispatched to
+    /// another queue - use `beginRun()` and `start(runID:)` for that.
+    func start() throws {
+        try start(runID: beginRun())
+    }
+
+    /// Works out the device's LAN address and publishes it.
+    ///
+    /// `getifaddrs()`/`getnameinfo()` are syscalls, so they run off the main
+    /// thread; only the publishing hops back onto the main actor.
+    private func publishLocalIP(for listener: NWListener) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let ip = self.getLocalIPAddress() ?? "—"
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.lifecycleLock.lock()
+                let stillWanted = self.wantsToRun && self.listener === listener
+                self.lifecycleLock.unlock()
+                guard stillWanted else { return }
+                print("[ProxyServer] local IP: \(ip)")
+                self.localIP = ip
+                self.socks5Server.setLocalIP(ip)
+                self.onLocalIPReady?(ip)
+                self.isRunning = true
+            }
+        }
+    }
+
+    /// Reports that the server could not be brought up.
+    ///
+    /// `failedListener` is the listener that failed, or `nil` when the
+    /// listener could not even be created. A failure is only reported for
+    /// the listener that is currently in charge, so a listener that fails
+    /// after the user already stopped the server stays quiet.
+    private func reportFailure(_ error: Error, for failedListener: NWListener?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.lifecycleLock.lock()
+            let isCurrent = failedListener == nil || self.listener === failedListener
+            if isCurrent {
+                self.wantsToRun = false
+                if failedListener != nil {
+                    self.listener = nil
+                }
+            }
+            self.lifecycleLock.unlock()
+            guard isCurrent else { return }
+            self.isRunning = false
+            self.failureMessage = "Failed to start debugger: \(error.localizedDescription)"
+        }
+    }
+
+    /// Stops the server.
+    ///
+    /// Main-actor isolated because it publishes `isRunning`; every call site
+    /// is on the main thread.
+    @MainActor
     func stop() {
-        listener?.cancel()
+        lifecycleLock.lock()
+        runID &+= 1
+        wantsToRun = false
+        let current = listener
         listener = nil
+        lifecycleLock.unlock()
+
+        current?.cancel()
         socks5Server.stop()
         isRunning = false
     }

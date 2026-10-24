@@ -16,13 +16,11 @@ struct TutorialView: View {
                 .pickerStyle(.segmented)
                 .padding()
 
-                TabView(selection: $selectedTab) {
+                if selectedTab == 0 {
                     MacTutorialView(localIP: localIP, port: port)
-                        .tag(0)
+                } else {
                     WindowsTutorialView(localIP: localIP, port: port)
-                        .tag(1)
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
             }
             .navigationTitle("Tutorial")
             .navigationBarTitleDisplayMode(.inline)

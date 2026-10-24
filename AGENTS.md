@@ -23,11 +23,19 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
   - `listener: NWListener?` - the TCP listener
   - `activeTunnels: [String: TunnelManager]` - dictionary of active tunnels, keyed by `"\(host):\(port):\(ObjectIdentifier(clientConnection))"`
   - `tunnelsLock: NSLock` - thread-safe access to tunnels dictionary
+  - `lifecycleLock: NSLock` - guards `listener`, `wantsToRun` and `runID`, because `start(runID:)` runs on a background queue and can race with `stop()`
+  - `wantsToRun: Bool` - false once `stop()` was called, so a listener that is still being created gets cancelled instead of left running
+  - `runID: UInt64` - bumped by every `stop()`; a start attempt carries the id it was given, so a start that arrives after the server was stopped is ignored
   - `localIP: String` - iOS device's WiFi IP address
+  - `failureMessage: String?` - set when the listener could not be brought up (e.g. the port is taken)
   - `onLocalIPReady: ((String) -> Void)?` - callback when IP is determined
 - **Key Methods**:
-  - `start()` - starts NWListener on specified port
-  - `stop()` - cancels listener
+  - `beginRun()` - registers the intent to run and returns the id of this run. Call it on the thread that owns the server, **before** dispatching `start(runID:)` to a background queue
+  - `start(runID:)` - creates and starts the NWListener on the **calling thread** (must not be the main thread - see below); the state handler runs on the main queue
+  - `start()` - `beginRun()` + `start(runID:)` in one go, for callers that are already off the main thread (the tests)
+  - `stop()` - cancels the listener and invalidates every pending start. Main-actor isolated, because it publishes `isRunning`
+  - `publishLocalIP(for:)` - looks the LAN address up off the main thread and publishes it on the main actor
+  - `reportFailure(_:for:)` - reports that the listener could not be brought up
   - `handleNewConnection(_:)` - handles incoming proxy connections
   - `receiveHTTPRequest(_:)` - receives data, checks for tunnel or parses HTTP
   - `processRequest(_:connection:)` - parses HTTP CONNECT request
@@ -62,28 +70,29 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
 - **Purpose**: Central state management for logs and statistics
 - **Annotations**: `ObservableObject` with `@Published` properties, `@MainActor` (thread-safe). NOTE: deployment target is iOS 16.0 — do NOT use `@Observable`/Observation framework or the two-parameter `onChange(of:initial:_:)` (both iOS 17+)
 - **Key Properties**:
-  - `entries: [LogEntry]` - limited to 100 entries
+  - `entries: [LogEntry]` - limited to 500 entries
   - `activeConnections: Int` - current connection count
   - `totalTxBytes: Int64` - total bytes sent to server
   - `totalRxBytes: Int64` - total bytes received from server
+  - `filteredEntries: [LogEntry]` - cached, recomputed when a filter input changes
 - **Key Methods**:
-  - `log(host:port:status:)` - adds new log entry
-  - `addTxBytes(_:)`, `addRxBytes(_:)` - updates byte counters
+  - `log(host:port:path:query:method:requestHeaders:)` - adds new log entry
+  - `addTxBytes(_:)`, `addRxBytes(_:)` - updates byte counters (flushed once per frame)
   - `incrementConnections()`, `decrementConnections()` - connection lifecycle
   - `clear()` - resets all state
 
 #### 4. LogEntry.swift
 - **Purpose**: Single log entry data model
-- **Properties**: `id`, `timestamp`, `host`, `port`, `status: LogStatus`
-- **LogStatus enum**: `connect`, `connected`, `closed`, `error`
-- **Display**: `HH:mm:ss  host:port  status` format
+- **Properties**: `id`, `timestamp`, `host`, `port`, `path`, `query`, `method`, `status: EntryStatus`
+- **EntryStatus enum**: `inProgress`, `completed`, `failed`
+- **Display**: the row shows `HH:mm:ss.SSS`, the method, the host and the path
 
 #### 5. ContentView.swift
 - **Purpose**: Main SwiftUI UI
 - **State Variables**:
   - `isRunning: Bool` - proxy running state
   - `logStore: LogStore` - shared log store
-  - `proxyServer: ProxyServer?` - current proxy instance
+  - `proxyServerHolder: ProxyServerHolder` - holds the current proxy instance and republishes its changes, so the `onChange` handlers fire when the server reports something
   - `connectionCount: Int` - derived from logStore.activeConnections
   - `txBytes: Int64`, `rxBytes: Int64` - derived from logStore totals
   - `localIP: String` - updated via onLocalIPReady callback
@@ -107,6 +116,18 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
   - Idle timer disabled while proxy running (`UIApplication.shared.isIdleTimerDisabled`)
   - Logs display with ScrollView + LazyVStack (avoid ForEach crash)
   - Clear logs button (disabled while running)
+- **Starting the proxy (see "The toggle must not block the main thread" below)**:
+  - The toggle flips the UI immediately and starts the server on a background queue
+  - The setup guide is presented from the `onChange` of `proxyServerHolder.server?.isRunning`,
+    i.e. once the server is actually up - never from inside the tap handler
+  - A failure to bring the listener up is shown as an alert: through
+    `proxyServerHolder.server?.failureMessage` when the listener failed, and through the
+    `catch` in `toggleProxy` when it could not be created at all
+  - Every way out of "running" goes through `resetRunningState()`, so a failed start
+    does not leave the uptime timer running or the device awake
+  - `ProxyServerHolder` republishes the server's changes. Reading
+    `holder.server?.isRunning` in a body only subscribes the view to the holder, so
+    without the forwarding the `onChange` handlers would not fire reliably
 
 #### 6. ContentLayout.swift
 - **Purpose**: The rules that decide how the main screen is arranged
@@ -145,17 +166,39 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
 
 3. **Thread Safety**:
    - `LogStore` is `@MainActor` for SwiftUI thread safety
-   - `ProxyServer` uses `NSLock` for tunnel dictionary access
+   - `ProxyServer` uses `NSLock` for the tunnel dictionary and another for the listener lifecycle
+   - `SOCKS5Server` uses `NSLock` for `localIP` and `udpRelay`, which are written on the
+     main thread and read on the connection's queue
    - `TunnelManager` uses `Task { @MainActor in }` for LogStore updates
 
 4. **SwiftUI Crash Prevention** (ForEach crash):
    - Use `ScrollView + LazyVStack` instead of `List`
    - LogStore uses private setters
-   - Limited to 100 log entries
+   - Limited to 500 log entries
 
-5. **IP Address Detection**: Uses `getifaddrs()` to query `en0` or `en1` interface for IPv4 address
+5. **IP Address Detection**: Uses `getifaddrs()` to query the bridge interface (hotspot)
+   first, then `en0` (WiFi), then `en1`
 
 6. **Keep Awake**: `UIApplication.shared.isIdleTimerDisabled = true` when running
+
+7. **The toggle must not block the main thread**: The first tap of "Enable Debugger Server"
+   used to freeze the UI for ~490 ms. The measurements and the fix are documented in
+   `docs/superpowers/specs/2026-10-24-first-tap-freeze-fix.md`. In short:
+   - `NWListener` creation on the main thread: 17-49 ms (the first listener of a process
+     initialises the Network framework)
+   - `getifaddrs()`/`getnameinfo()` on the listener's main queue: 2-7 ms
+   - `isIdleTimerDisabled = true`: 26 ms the first time, 0.3 ms afterwards
+   - SwiftUI's first layout of the "running" state: 22-82 ms
+   - The setup guide sheet's first render: 160-380 ms
+   The fixes:
+   - `ProxyServer.start(runID:)` runs on a background queue; the UI reacts at once
+   - `publishLocalIP(for:)` does the interface lookup off the main thread
+   - `HttpRelayApp.init()` warms up the Network framework and the idle timer at launch
+   - The setup guide is presented from the `onChange` of `server?.isRunning`, so it is
+     built after the server is up instead of during the tap
+   - The setup guide no longer uses a paged `TabView`, which roughly halved its first render
+   Result: the tap itself went from ~55 ms to ~6 ms, and the first-tap freeze from
+   ~490 ms to ~40 ms (the guide still takes ~150 ms to appear, after the server is up)
 
 ## Common Issues Fixed
 
@@ -174,6 +217,12 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
    left the log console squeezed or clipped off screen - fixed by `ContentLayout.swift`, which
    derives the layout from the available window size only
 
+7. **First-tap freeze**: The "Enable Debugger Server" toggle blocked the main thread for
+   ~490 ms on its first tap - the listener was created on the main thread, the interface
+   lookup ran on the listener's main queue, and the setup guide sheet was built during the
+   tap. Fixed by moving the listener creation and the IP lookup off the main thread,
+   warming the Network framework at launch, and presenting the guide once the server is up
+
 ## Build & Run
 
 ```bash
@@ -189,10 +238,17 @@ xcodebuild test -project HttpRelay.xcodeproj -scheme HttpRelay \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
 
-- `HttpRelayTests/` - the proxy protocol: HTTP CONNECT, SOCKS5, UDP associate
+- `HttpRelayTests/` - the proxy protocol: HTTP CONNECT, SOCKS5, UDP associate, plus the
+  lifecycle of the server (a start that was cancelled must not come up, a stale start must
+  not take over a newer run, a taken port must be reported)
 - `HttpRelayTests/DuoLayoutTests.swift` - the main screen at the sizes the iPhone Duo and an
   iPhone can take. It renders the screen in a window backed by a window scene, because without a
   scene the layout never settles and the measurement the test checks never happens
+- `HttpRelayUITests/HttpRelayUITests.swift` - `testToggleStartsAProxyThatAnswers` taps the
+  toggle, waits for the screen to publish the device's IP address (which only happens once
+  the listener is up) and then sends a real HTTP CONNECT request to the port from the port
+  field. It checks for `502 Bad Gateway`, the answer only this app gives for a CONNECT to a
+  closed port, so another proxy listening on the same port cannot make it pass.
 
 Manual:
 
@@ -205,13 +261,21 @@ Manual:
 
 ```
 HttpRelay/
-├── HttpRelayApp.swift       # @main entry point
-├── ContentView.swift       # Main UI (SwiftUI)
+├── HttpRelayApp.swift       # @main entry point, warms up the Network framework
+├── ContentView.swift        # Main UI (SwiftUI)
 ├── ContentLayout.swift      # Rules for the adaptive main screen layout
 ├── ProxyServer.swift        # HTTP CONNECT proxy server (Network framework)
 ├── TunnelManager.swift      # Connection bridging
+├── SOCKS5.swift             # SOCKS5 server and UDP relay
 ├── LogStore.swift           # State management (ObservableObject + @Published)
 ├── LogEntry.swift           # Data model
-├── Info.plist
-└── ...test files
+├── TutorialView.swift       # The setup guide that is shown when the server starts
+├── SettingsView.swift       # Settings sheet
+├── AboutView.swift          # About sheet
+├── BackgroundKeepaliveCoordinator.swift  # Keeps the proxy alive in the background
+└── Assets.xcassets          # Icons and the screenshots of the setup guide
+
+HttpRelayTests/              # Unit tests (swift-testing)
+HttpRelayUITests/            # UI tests (XCTest)
+docs/superpowers/specs/      # Design documents, one per change
 ```

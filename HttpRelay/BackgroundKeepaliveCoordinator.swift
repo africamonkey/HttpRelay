@@ -10,7 +10,9 @@ final class BackgroundKeepaliveCoordinator {
     private init() {}
 
     func start() {
-        guard ProxyServer.shared?.isRunning == true else { return }
+        // The server is asked for before it is up, so the check is on the
+        // server existing at all - not on it already being ready.
+        guard ProxyServer.shared != nil else { return }
         guard taskID == .invalid else { return }
         let newID = UIApplication.shared.beginBackgroundTask(withName: "HttpRelay.Keepalive") { [weak self] in
             self?.expire()
