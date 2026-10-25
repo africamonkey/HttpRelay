@@ -39,12 +39,29 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
   - `handleNewConnection(_:)` - handles incoming proxy connections
   - `receiveHTTPRequest(_:)` - receives data, checks for tunnel or parses HTTP
   - `processRequest(_:connection:)` - parses HTTP CONNECT request
+  - `handleHTTPProxyRequest(method:methodStr:requestTarget:request:connection:leftover:)` - handles a plain HTTP proxy request (absolute form)
   - `establishTunnel(host:port:clientConnection:)` - creates TunnelManager for CONNECT
   - `sendSuccessResponse(_:)` - sends "HTTP/1.1 200 Connection Established"
   - `sendErrorResponse(_:code:)` - sends HTTP error response
   - `findTunnelKey(for:)` - finds tunnel by client connection reference
   - `forwardToTunnel(connection:data:)` - forwards binary data to existing tunnel
   - `getLocalIPAddress()` - queries WiFi interface IP via getifaddrs()
+- **The two request forms**:
+  - A CONNECT request carries the authority `host:port` as its request-target, a plain
+    HTTP request carries the absolute form `scheme://host[:port]/path?query`. Only the
+    latter has a path, and only the latter may leave the port out - it is then the
+    default port of the scheme (RFC 9110 §4.2.3)
+  - A plain HTTP request is forwarded with the path percent-encoded, with the Host
+    header of the target (RFC 9112 §3.2.2) and without the hop-by-hop headers
+    (RFC 9110 §7.6.1); `HTTPTarget` does the parsing
+  - Only the `http` scheme is served. The proxy forwards plain HTTP; a client that wants
+    TLS opens a tunnel with CONNECT
+  - A tunnel that failed before it was up is answered with "502 Bad Gateway". A tunnel
+    that was already up is not answered: the client speaks another protocol on it then,
+    and a status line would only corrupt the stream
+  - The body of a request is not part of the header block, so the request buffer keeps
+    the bytes that came with it and hands them on separately - a body that arrives in
+    the same segment as the headers used to be dropped
 
 #### 2. TunnelManager.swift
 - **Purpose**: Manages bidirectional data forwarding between client and target server
@@ -65,8 +82,31 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
   - `receiveClientData(_:)` - handles data forwarded from ProxyServer (binary HTTPS data)
   - `close()` - cancels both connections
 - **Byte Counting**: Every data forward calls `logStore.addTxBytes()` or `logStore.addRxBytes()` via `Task { @MainActor in }`
+- **The state of the tunnel** (`stateLock`): the tunnel's queue and the main queue both
+  touch it, so it is behind a lock
+  - `hasConnected` - the connection to the target was established
+  - `hasReceivedResponse` - the target answered; set before the bytes are handed to the
+    client, so a failure that is reported afterwards cannot put a status line in front
+    of the response
+  - `hasFailed` - the tunnel was given up on. A connection can go to `.waiting` and come
+    up anyway, and a late `.ready` must not write a second status line into the client's
+    stream
+  - `answerWhenTunnelBreaks` / `answerWhenTargetBreaks` - turn that state into the answer
+    the client gets: a status line, or the end of the connection only
 
-#### 3. LogStore.swift
+#### 3. HTTPTarget.swift
+- **Purpose**: The target of a plain HTTP proxy request
+- **Key Properties**: `host: String`, `port: Int`, `path: String` (percent-encoded), `query: String?` (percent-encoded)
+- **Key Methods**:
+  - `init?(requestTarget:)` - parses a request target in the absolute form. Returns `nil`
+    for a target that is not a URL with a host and the `http` scheme, or whose port is
+    not a port a connection can be made to
+  - `hostHeaderValue: String` - the authority of the target, with the port only when it
+    is not the default port of the scheme (RFC 9110 §7.2)
+- The path and the query stay percent-encoded: `URL.path` decodes them, and a request
+  that goes on the wire with a decoded path is not the request the client asked for
+
+#### 4. LogStore.swift
 - **Purpose**: Central state management for logs and statistics
 - **Annotations**: `ObservableObject` with `@Published` properties, `@MainActor` (thread-safe). NOTE: deployment target is iOS 16.0 — do NOT use `@Observable`/Observation framework or the two-parameter `onChange(of:initial:_:)` (both iOS 17+)
 - **Key Properties**:
@@ -81,13 +121,17 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
   - `incrementConnections()`, `decrementConnections()` - connection lifecycle
   - `clear()` - resets all state
 
-#### 4. LogEntry.swift
+#### 5. LogEntry.swift
 - **Purpose**: Single log entry data model
 - **Properties**: `id`, `timestamp`, `host`, `port`, `path`, `query`, `method`, `status: EntryStatus`
 - **EntryStatus enum**: `inProgress`, `completed`, `failed`
 - **Display**: the row shows `HH:mm:ss.SSS`, the method, the host and the path
+- **A CONNECT entry has no path**: the request-target of a CONNECT request is the
+  authority `host:port` (RFC 9110 §7.2), so the path stays empty. `fullURL` is then
+  the authority alone, and the row shows the port (`:443`) below the host. Storing
+  the request-target as the path would print the authority twice.
 
-#### 5. ContentView.swift
+#### 6. ContentView.swift
 - **Purpose**: Main SwiftUI UI
 - **State Variables**:
   - `isRunning: Bool` - proxy running state
@@ -129,7 +173,7 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
     `holder.server?.isRunning` in a body only subscribes the view to the holder, so
     without the forwarding the `onChange` handlers would not fire reliably
 
-#### 6. ContentLayout.swift
+#### 7. ContentLayout.swift
 - **Purpose**: The rules that decide how the main screen is arranged
 - **Key Properties**: `wideLayoutMinWidth`, `sidebarWidth`, `minLogColumnWidth`, `minLogHeight`,
   `blockSpacing`, `layoutPadding`
@@ -223,6 +267,31 @@ HttpRelay is an iOS app that acts as an HTTP CONNECT proxy server. It allows a W
    tap. Fixed by moving the listener creation and the IP lookup off the main thread,
    warming the Network framework at launch, and presenting the guide once the server is up
 
+8. **The two request forms**: A CONNECT request has no path - its request-target is the
+   authority - and a plain HTTP request may leave the port out. The proxy used to store
+   the request-target of a CONNECT request as the path (so the request details printed
+   the authority twice) and to refuse a plain HTTP request without a port with
+   "400 Bad Request". Fixed by `HTTPTarget` and by an empty path for CONNECT entries;
+   documented in `docs/superpowers/specs/2026-10-25-the-two-request-forms.md`
+
+9. **A request that the proxy mangled or dropped**: The forwarded request used the
+   decoded path (`/a%20b` became `/a b`), the `Host` header was copied from the client
+   instead of being replaced with the authority of the target, the hop-by-hop headers
+   were forwarded to the origin server, and a body that arrived in the same segment as
+   the header block was dropped while its `Content-Length` was forwarded
+
+10. **A broken tunnel answered the client twice**: A tunnel that broke after it was up
+    still got a "502 Bad Gateway" written into the client's stream, which corrupts the
+    TLS stream of a CONNECT. A tunnel that was never up gets the status line, a tunnel
+    that was up only gets the end of the connection
+
+11. **A port that crashed the app**: `CONNECT example.com:70000` turned the port into an
+    `NWEndpoint.Port` with `UInt16(port)!` and crashed the proxy. Both request forms
+    check the port now
+
+12. **A failed tunnel in the log**: `LogStore.completeEntry` overwrote a `failed` entry
+    with `completed`, so a tunnel that had broken was logged as a success
+
 ## Build & Run
 
 ```bash
@@ -238,9 +307,18 @@ xcodebuild test -project HttpRelay.xcodeproj -scheme HttpRelay \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
 
-- `HttpRelayTests/` - the proxy protocol: HTTP CONNECT, SOCKS5, UDP associate, plus the
-  lifecycle of the server (a start that was cancelled must not come up, a stale start must
-  not take over a newer run, a taken port must be reported)
+- `HttpRelayTests/` - the proxy protocol: HTTP CONNECT, plain HTTP proxying, SOCKS5, UDP
+  associate, plus the lifecycle of the server (a start that was cancelled must not come up,
+  a stale start must not take over a newer run, a taken port must be reported)
+- `HttpRelayTests/HTTPRegressionTests.swift` - the two request forms end to end: a CONNECT
+  without a path in the log, a plain HTTP request without a port in the target, the
+  forwarded request with its path and its `Host` header, the body of a request, the
+  hop-by-hop headers, a tunnel that breaks, a failed tunnel in the log, and a port that no
+  connection can be made to
+- `HttpRelayTests/HTTPTargetTests.swift` - the parsing of a request target in the
+  absolute form
+- `HttpRelayTests/TunnelFailureTests.swift` - the answer a client gets when its tunnel
+  breaks
 - `HttpRelayTests/DuoLayoutTests.swift` - the main screen at the sizes the iPhone Duo and an
   iPhone can take. It renders the screen in a window backed by a window scene, because without a
   scene the layout never settles and the measurement the test checks never happens
@@ -265,6 +343,7 @@ HttpRelay/
 ├── ContentView.swift        # Main UI (SwiftUI)
 ├── ContentLayout.swift      # Rules for the adaptive main screen layout
 ├── ProxyServer.swift        # HTTP CONNECT proxy server (Network framework)
+├── HTTPTarget.swift         # The target of a plain HTTP proxy request
 ├── TunnelManager.swift      # Connection bridging
 ├── SOCKS5.swift             # SOCKS5 server and UDP relay
 ├── LogStore.swift           # State management (ObservableObject + @Published)

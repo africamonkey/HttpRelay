@@ -285,8 +285,8 @@ final class ProxyServer: ObservableObject {
                 switch buf.tryParse() {
                 case .needMore:
                     pump()
-                case .ready(let request):
-                    self.processRequest(request, connection: connection)
+                case .ready(let request, let leftover):
+                    self.processRequest(request, connection: connection, leftover: leftover)
                     // processRequest kicks off its own receive chain. We're done here.
                 }
             }
@@ -304,7 +304,11 @@ final class ProxyServer: ObservableObject {
 
         enum ParseResult {
             case needMore
-            case ready(request: String)
+            /// The header block and the bytes that came with it. The bytes
+            /// after the header block are the body of the request (or the
+            /// first bytes of the protocol the client speaks after a
+            /// CONNECT), and they have to be forwarded as well.
+            case ready(request: String, leftover: Data)
         }
 
         func tryParse() -> ParseResult {
@@ -312,15 +316,16 @@ final class ProxyServer: ObservableObject {
             guard let endRange = data.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) else {
                 return .needMore
             }
-            // Request line + headers; if there's a body in the same buffer we
-            // include it. processRequest parses just the request line — extra
-            // bytes are handled by the existing receive loop in receiveHTTPRequest.
+            // Request line + headers; everything after them is the body of
+            // the request and is handed on separately - it would be lost if
+            // the buffer stopped here.
             let headerEnd = endRange.upperBound
             let requestBytes = data.subdata(in: 0..<headerEnd)
+            let leftover = data.subdata(in: headerEnd..<data.count)
             // Strip the trailing \r\n\r\n — processRequest expects the
             // header block without the terminator.
             let request = String(data: requestBytes.dropLast(4), encoding: .utf8) ?? ""
-            return .ready(request: request)
+            return .ready(request: request, leftover: leftover)
         }
     }
 
@@ -383,7 +388,12 @@ final class ProxyServer: ObservableObject {
         }
     }
 
-    private func processRequest(_ request: String, connection: NWConnection) {
+    /// Parses a request and sets up the tunnel it asks for.
+    ///
+    /// `leftover` are the bytes that came with the request but are not
+    /// part of it: the body of the request, or the first bytes of the
+    /// protocol the client speaks after a CONNECT.
+    private func processRequest(_ request: String, connection: NWConnection, leftover: Data = Data()) {
         print("[ProxyServer] processRequest: parsing request")
         let lines = request.split(separator: "\r\n")
         guard let firstLine = lines.first else {
@@ -407,15 +417,23 @@ final class ProxyServer: ObservableObject {
 
         if method == .connect {
             let hostPort = target.split(separator: ":")
+            // The port has to be one a connection can be made to; a port
+            // outside the range would trap when it is turned into an
+            // NWEndpoint.Port.
             guard hostPort.count == 2,
-                  let port = Int(hostPort[1]) else {
+                  let port = Int(hostPort[1]),
+                  (1...65535).contains(port) else {
                 print("[ProxyServer] processRequest: invalid target, sending 400")
                 sendErrorResponse(connection, code: "400 Bad Request")
                 return
             }
 
             let host = String(hostPort[0])
-            let (path, query) = parsePathAndQuery(from: request)
+            // The request-target of a CONNECT request is the authority
+            // `host:port` (RFC 9110 §7.2), not a path. Storing it as the
+            // path would print the authority twice in the request details.
+            let path = ""
+            let query: String? = nil
             let requestHeaders = parseHeaders(from: request)
 
             print("[ProxyServer] processRequest: CONNECT to \(host):\(port), path=\(path)")
@@ -424,7 +442,7 @@ final class ProxyServer: ObservableObject {
                 let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
                 logStore.incrementConnections()
                 do {
-                    try establishTunnel(host: host, port: port, clientConnection: connection, logEntry: logEntry)
+                    try establishTunnel(host: host, port: port, clientConnection: connection, logEntry: logEntry, leftover: leftover)
                 } catch {
                     print("[ProxyServer] processRequest: establishTunnel failed: \(error)")
                     logStore.failEntry(logEntry)
@@ -434,7 +452,7 @@ final class ProxyServer: ObservableObject {
             }
         } else {
             print("[ProxyServer] processRequest: handling as HTTP proxy request")
-            handleHTTPPxoyRequest(method: method, methodStr: methodStr, target: target, request: request, connection: connection)
+            handleHTTPProxyRequest(method: method, methodStr: methodStr, requestTarget: target, request: request, connection: connection, leftover: leftover)
         }
         // NOTE: do not call receiveHTTPRequest here. The receive loop is
         // started either after a successful CONNECT handshake (in
@@ -444,24 +462,20 @@ final class ProxyServer: ObservableObject {
         // request.
     }
 
-    private func handleHTTPPxoyRequest(method: LogEntry.HTTPMethod, methodStr: String, target: String, request: String, connection: NWConnection) {
-        guard let url = URL(string: target) else {
-            print("[ProxyServer] handleHTTPPxoyRequest: invalid URL: \(target)")
+    private func handleHTTPProxyRequest(method: LogEntry.HTTPMethod, methodStr: String, requestTarget: String, request: String, connection: NWConnection, leftover: Data) {
+        guard let target = HTTPTarget(requestTarget: requestTarget) else {
+            print("[ProxyServer] handleHTTPProxyRequest: invalid target: \(requestTarget)")
             sendErrorResponse(connection, code: "400 Bad Request")
             return
         }
 
-        guard let host = url.host, let port = url.port else {
-            print("[ProxyServer] handleHTTPPxoyRequest: missing host/port in URL: \(target)")
-            sendErrorResponse(connection, code: "400 Bad Request")
-            return
-        }
-
-        let path = url.path.isEmpty ? "/" : url.path
-        let query = url.query
+        let host = target.host
+        let port = target.port
+        let path = target.path
+        let query = target.query
         let requestHeaders = parseHeaders(from: request)
 
-        print("[ProxyServer] handleHTTPPxoyRequest: \(methodStr) \(host):\(port)\(path)")
+        print("[ProxyServer] handleHTTPProxyRequest: \(methodStr) \(host):\(port)\(path)")
         Task { @MainActor [weak self] in
             guard let self = self else { return }
             let logEntry = logStore.log(host: host, port: port, path: path, query: query, method: method, requestHeaders: requestHeaders)
@@ -479,15 +493,15 @@ final class ProxyServer: ObservableObject {
 
             tunnelManager.onConnected = { [weak self] in
                 guard let self = self else { return }
-                print("[ProxyServer] handleHTTPPxoyRequest: connected to \(host):\(port), sending request")
-                self.sendHTTPProxyRequest(tunnelManager: tunnelManager, methodStr: methodStr, path: path, query: query, request: request, connection: connection)
+                print("[ProxyServer] handleHTTPProxyRequest: connected to \(host):\(port), sending request")
+                self.sendHTTPProxyRequest(tunnelManager: tunnelManager, methodStr: methodStr, target: target, clientHeaders: requestHeaders, request: request, connection: connection, leftover: leftover)
                 // Tunnel established; start forwarding client→server bytes
                 // (POST body, follow-up requests on the same connection).
                 self.receiveHTTPRequest(connection)
             }
 
             tunnelManager.onClose = { [weak self] in
-                print("[ProxyServer] handleHTTPPxoyRequest: connection closed")
+                print("[ProxyServer] handleHTTPProxyRequest: connection closed")
                 if let self = self {
                     self.logStore.completeEntry(logEntry)
                     self.logStore.decrementConnections()
@@ -496,10 +510,21 @@ final class ProxyServer: ObservableObject {
             }
 
             tunnelManager.onError = { [weak self] in
-                print("[ProxyServer] handleHTTPPxoyRequest: connection error")
+                print("[ProxyServer] handleHTTPProxyRequest: connection error")
                 if let self = self {
                     self.logStore.failEntry(logEntry)
                     self.logStore.decrementConnections()
+                    // Reply to the client with 502 so it sees a proper
+                    // status line instead of waiting for a timeout. A
+                    // target that already answered is left alone: the
+                    // status line would only land in the middle of its
+                    // response.
+                    switch tunnelManager.answerWhenTargetBreaks {
+                    case .statusLine:
+                        self.sendErrorResponse(connection, code: "502 Bad Gateway")
+                    case .endOfConnection:
+                        break
+                    }
                     self.withTunnelsLock { self.activeTunnels.removeValue(forKey: key) }
                 }
             }
@@ -508,16 +533,40 @@ final class ProxyServer: ObservableObject {
         }
     }
 
-    private func sendHTTPProxyRequest(tunnelManager: TunnelManager, methodStr: String, path: String, query: String?, request: String, connection: NWConnection) {
+    private func sendHTTPProxyRequest(tunnelManager: TunnelManager, methodStr: String, target: HTTPTarget, clientHeaders: [String: String], request: String, connection: NWConnection, leftover: Data) {
         let fullPath: String
-        if let query = query, !query.isEmpty {
-            fullPath = "\(path)?\(query)"
+        if let query = target.query, !query.isEmpty {
+            fullPath = "\(target.path)?\(query)"
         } else {
-            fullPath = path
+            fullPath = target.path
         }
 
-        var headers = parseHeaders(from: request)
-        headers["Host"] = headers["Host"] ?? tunnelManager.host
+        var headers = clientHeaders
+        // A proxy replaces the Host header with the authority of the
+        // request target (RFC 9112 §3.2.2).
+        for key in headers.keys.filter({ $0.lowercased() == "host" }) {
+            headers.removeValue(forKey: key)
+        }
+        headers["Host"] = target.hostHeaderValue
+
+        // Hop-by-hop headers belong to the connection between the client
+        // and the proxy, not to the request the proxy forwards
+        // (RFC 9110 §7.6.1). The Connection header names the other headers
+        // that are hop-by-hop as well.
+        //
+        // Transfer-Encoding stays: the body is passed on unchanged, so its
+        // framing has to stay with it.
+        var hopByHop = Set(["connection", "keep-alive", "proxy-authenticate",
+                            "proxy-authorization", "proxy-connection", "te",
+                            "trailer", "upgrade"])
+        if let connectionHeader = headers.first(where: { $0.key.lowercased() == "connection" })?.value {
+            for name in connectionHeader.split(separator: ",") {
+                hopByHop.insert(name.trimmingCharacters(in: .whitespaces).lowercased())
+            }
+        }
+        for key in headers.keys.filter({ hopByHop.contains($0.lowercased()) }) {
+            headers.removeValue(forKey: key)
+        }
 
         let firstLine = "\(methodStr) \(fullPath) HTTP/1.1"
         var httpRequest = firstLine + "\r\n"
@@ -537,30 +586,14 @@ final class ProxyServer: ObservableObject {
             tunnelManager.sendToServer(data: data)
         }
 
+        // The body that came with the header block is not part of the
+        // request string, so it goes to the server on its own - right
+        // behind the request it belongs to.
+        if !leftover.isEmpty {
+            tunnelManager.sendToServer(data: leftover)
+        }
+
         logStore.updateEntry(tunnelManager.logEntry, responseStatusCode: 0, responseHeaders: nil, duration: 0)
-    }
-
-    private func parsePathAndQuery(from request: String) -> (path: String, query: String?) {
-        let lines = request.split(separator: "\r\n")
-        guard let firstLine = lines.first else {
-            return ("/", nil)
-        }
-
-        let components = firstLine.split(separator: " ")
-        guard components.count >= 2 else {
-            return ("/", nil)
-        }
-
-        let target = String(components[1])
-
-        if target.contains("?") {
-            let parts = target.split(separator: "?", maxSplits: 1)
-            let pathPart = String(parts[0])
-            let queryPart = parts.count > 1 ? String(parts[1]) : nil
-            return (pathPart, queryPart)
-        }
-
-        return (target, nil)
     }
 
     private func parseHeaders(from request: String) -> [String: String] {
@@ -580,7 +613,7 @@ final class ProxyServer: ObservableObject {
         return headers
     }
 
-    private func establishTunnel(host: String, port: Int, clientConnection: NWConnection, logEntry: LogEntry) throws {
+    private func establishTunnel(host: String, port: Int, clientConnection: NWConnection, logEntry: LogEntry, leftover: Data) throws {
         let tunnelManager = TunnelManager(
             host: host,
             port: port,
@@ -594,6 +627,12 @@ final class ProxyServer: ObservableObject {
         tunnelManager.onConnected = { [weak self] in
             print("[ProxyServer] onConnected callback fired for \(host):\(port)")
             self?.sendSuccessResponse(clientConnection)
+            // Bytes the client sent before the tunnel was up - the first
+            // bytes of the protocol it speaks after the CONNECT - go to
+            // the server behind the 200.
+            if !leftover.isEmpty {
+                tunnelManager.receiveClientData(leftover)
+            }
             // Tunnel established: now start forwarding client→server bytes
             // through the receive loop.
             self?.receiveHTTPRequest(clientConnection)
@@ -615,8 +654,16 @@ final class ProxyServer: ObservableObject {
                 self.logStore.failEntry(logEntry)
                 self.logStore.decrementConnections()
                 // Reply to the client with 502 so HTTP clients see a proper
-                // status line instead of a silent close.
-                self.sendErrorResponse(clientConnection, code: "502 Bad Gateway")
+                // status line instead of a silent close. A tunnel that was
+                // already up is not answered: the client is speaking
+                // another protocol on it then, and a status line would only
+                // corrupt the stream.
+                switch tunnelManager.answerWhenTunnelBreaks {
+                case .statusLine:
+                    self.sendErrorResponse(clientConnection, code: "502 Bad Gateway")
+                case .endOfConnection:
+                    break
+                }
                 self.withTunnelsLock { self.activeTunnels.removeValue(forKey: key) }
             }
         }

@@ -511,7 +511,7 @@ struct LogRowView: View {
                     .font(.caption)
                     .fontWeight(.medium)
                     .lineLimit(1)
-                Text(entry.path)
+                Text(entry.rowDetail)
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundColor(.secondary)
                     .lineLimit(1)

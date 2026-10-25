@@ -34,9 +34,10 @@ final class LogStore: ObservableObject {
                 matchesSearch = true
             } else {
                 let lowercased = searchText.lowercased()
-                matchesSearch = entry.host.lowercased().contains(lowercased)
-                    || entry.path.lowercased().contains(lowercased)
-                    || (entry.query?.lowercased().contains(lowercased) ?? false)
+                // The full URL carries the host, the port, the path and the
+                // query - a CONNECT entry has no path, so its authority has to
+                // be searchable as well.
+                matchesSearch = entry.fullURL.lowercased().contains(lowercased)
             }
 
             let matchesMethod = selectedMethods.isEmpty || selectedMethods.contains(entry.method)
@@ -111,7 +112,11 @@ final class LogStore: ObservableObject {
 
     func completeEntry(_ entry: LogEntry) {
         if let index = entries.firstIndex(where: { $0.id == entry.id }) {
-            entries[index].status = .completed
+            // A failed entry stays failed: a tunnel that was torn down
+            // after a failure is closed, not completed.
+            if entries[index].status != .failed {
+                entries[index].status = .completed
+            }
             if entries[index].duration == nil {
                 entries[index].duration = Date().timeIntervalSince(entries[index].timestamp)
             }

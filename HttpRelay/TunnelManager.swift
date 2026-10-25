@@ -17,9 +17,99 @@ final class TunnelManager {
 
     private var pendingOnConnected = false
     private var connectionStartTime: Date?
-    private var hasReceivedFirstResponse = false
     private var responseHeaders: [String: String] = [:]
     private var responseStatusCode: Int?
+
+    /// The state of the tunnel, shared between the tunnel's queue and the
+    /// main queue the callbacks run on.
+    private let stateLock = NSLock()
+    private var connected = false
+    private var receivedResponse = false
+    private var failed = false
+
+    /// What the client gets when the tunnel breaks.
+    enum AnswerWhenBroken {
+        /// A status line, because the client is waiting for one.
+        case statusLine
+        /// The end of the connection only. The client is speaking another
+        /// protocol on the tunnel, or the response is already on its way,
+        /// and a status line there would only corrupt the stream.
+        case endOfConnection
+    }
+
+    /// The answer for a CONNECT tunnel that breaks.
+    ///
+    /// A tunnel that was up carries another protocol - TLS for a CONNECT
+    /// - so the client must not get a status line.
+    var answerWhenTunnelBreaks: AnswerWhenBroken {
+        hasConnected ? .endOfConnection : .statusLine
+    }
+
+    /// The answer for a plain HTTP request whose target breaks.
+    ///
+    /// The client waits for a response, so it gets a status line - unless
+    /// the target already answered, because the status line would land in
+    /// the middle of that response.
+    var answerWhenTargetBreaks: AnswerWhenBroken {
+        hasReceivedResponse ? .endOfConnection : .statusLine
+    }
+
+    /// Whether the connection to the target was established.
+    var hasConnected: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return connected
+    }
+
+    /// Whether the target already answered.
+    ///
+    /// The flag is set when the first bytes of the response arrive, before
+    /// they are handed to the client. It is therefore set early enough: a
+    /// failure that is reported after that must not put a status line in
+    /// front of the response.
+    var hasReceivedResponse: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return receivedResponse
+    }
+
+    /// Remembers that the target answered.
+    ///
+    /// Internal so the tests can put a tunnel into the state it is in
+    /// after the target answered.
+    func markResponseReceived() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        receivedResponse = true
+    }
+
+    /// Remembers that the connection to the target was established.
+    ///
+    /// Internal so the tests can put a tunnel into the state it is in
+    /// after the connection is up.
+    func markConnected() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        connected = true
+    }
+
+    /// Whether the tunnel was given up on.
+    ///
+    /// A connection can go to `.waiting` and come up anyway. The tunnel is
+    /// given up on when that happens, so a later `.ready` must not bring it
+    /// up: the client has already been told that the request failed.
+    var hasFailed: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return failed
+    }
+
+    /// Remembers that the tunnel was given up on.
+    private func markFailed() {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        failed = true
+    }
 
     private var connectionTimeoutItem: DispatchWorkItem?
     private let connectionTimeoutSeconds: TimeInterval = 30.0
@@ -56,11 +146,20 @@ final class TunnelManager {
 
             switch state {
             case .ready:
+                guard !self.hasFailed else {
+                    // The tunnel was given up on while the connection was
+                    // waiting. It must not come up now: the client has
+                    // already been answered with an error.
+                    print("[TunnelManager] server connection READY after a failure, cancelling")
+                    self.serverConnection?.cancel()
+                    return
+                }
                 self.cancelConnectionTimeout()
                 print("[TunnelManager] server connection READY to \(self.host):\(self.port)")
                 self.pendingOnConnected = true
                 DispatchQueue.main.async {
                     print("[TunnelManager] dispatching onConnected callback")
+                    self.markConnected()
                     self.onConnected?()
                 }
                 print("[TunnelManager] calling startForwarding")
@@ -71,6 +170,7 @@ final class TunnelManager {
                 // Do NOT cancel the client connection here — ProxyServer's
                 // onError handler is responsible for sending an HTTP error
                 // reply before tearing the client down.
+                self.markFailed()
                 DispatchQueue.main.async {
                     self.logStore.failEntry(self.logEntry)
                     self.onError?()
@@ -78,9 +178,13 @@ final class TunnelManager {
             case .waiting(let error):
                 // Connection refused (or other transient) often manifests
                 // as .waiting rather than .failed. Treat any non-success
-                // waiting state as a failure.
+                // waiting state as a failure. The connection can still come
+                // up afterwards, so the tunnel is marked as failed: a later
+                // .ready must not bring it up and write a second status
+                // line into the client's stream.
                 print("[TunnelManager] server connection WAITING with error \(error), treating as failure")
                 self.cancelConnectionTimeout()
+                self.markFailed()
                 DispatchQueue.main.async {
                     self.logStore.failEntry(self.logEntry)
                     self.onError?()
@@ -154,9 +258,18 @@ final class TunnelManager {
 
             switch state {
             case .ready:
+                guard !self.hasFailed else {
+                    // The tunnel was given up on while the connection was
+                    // waiting. It must not come up now: the client has
+                    // already been answered with an error.
+                    print("[TunnelManager] startAsProxy server READY after a failure, cancelling")
+                    self.serverConnection?.cancel()
+                    return
+                }
                 self.cancelConnectionTimeout()
                 print("[TunnelManager] startAsProxy server READY")
                 DispatchQueue.main.async {
+                    self.markConnected()
                     self.onConnected?()
                 }
                 self.startProxyForwarding()
@@ -166,6 +279,7 @@ final class TunnelManager {
                 // Do NOT cancel the client connection here — ProxyServer's
                 // onError handler is responsible for sending an HTTP error
                 // reply before tearing the client down.
+                self.markFailed()
                 DispatchQueue.main.async {
                     self.logStore.failEntry(self.logEntry)
                     self.onError?()
@@ -173,6 +287,7 @@ final class TunnelManager {
             case .waiting(let error):
                 print("[TunnelManager] startAsProxy server WAITING with error \(error), treating as failure")
                 self.cancelConnectionTimeout()
+                self.markFailed()
                 DispatchQueue.main.async {
                     self.logStore.failEntry(self.logEntry)
                     self.onError?()
@@ -220,8 +335,8 @@ final class TunnelManager {
             }
 
             if let data = data, !data.isEmpty {
-                if !self.hasReceivedFirstResponse {
-                    self.hasReceivedFirstResponse = true
+                if !self.hasReceivedResponse {
+                    self.markResponseReceived()
                     self.parseAndLogResponse(data: data)
                 }
                 if isComplete {
@@ -274,8 +389,8 @@ final class TunnelManager {
             }
 
             if let data = data, !data.isEmpty {
-                if !self.hasReceivedFirstResponse {
-                    self.hasReceivedFirstResponse = true
+                if !self.hasReceivedResponse {
+                    self.markResponseReceived()
                     self.parseAndLogResponse(data: data)
                 }
                 Task { @MainActor in
@@ -347,8 +462,8 @@ final class TunnelManager {
             }
 
             if let data = data, !data.isEmpty {
-                if !self.hasReceivedFirstResponse {
-                    self.hasReceivedFirstResponse = true
+                if !self.hasReceivedResponse {
+                    self.markResponseReceived()
                     self.parseAndLogResponse(data: data)
                 }
                 if isComplete {
@@ -435,8 +550,8 @@ final class TunnelManager {
             }
 
             if let data = data, !data.isEmpty {
-                if !self.hasReceivedFirstResponse {
-                    self.hasReceivedFirstResponse = true
+                if !self.hasReceivedResponse {
+                    self.markResponseReceived()
                     self.parseAndLogResponse(data: data)
                 }
                 if isComplete {

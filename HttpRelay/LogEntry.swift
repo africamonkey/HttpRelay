@@ -44,11 +44,24 @@ struct LogEntry: Identifiable, Equatable {
         Self.timeFormatter.string(from: timestamp)
     }
 
+    /// The URL of the request: `host:port`, followed by the path and the
+    /// query when the request has them. A CONNECT request has no path, so
+    /// its URL is the authority alone.
     var fullURL: String {
-        if let query = query, !query.isEmpty {
-            return "\(host):\(port)\(path)?\(query)"
+        var url = "\(host):\(port)"
+        if !path.isEmpty {
+            url += path
         }
-        return "\(host):\(port)\(path)"
+        if let query = query, !query.isEmpty {
+            url += "?\(query)"
+        }
+        return url
+    }
+
+    /// What a log row shows below the host: the path of the request, or the
+    /// port of a CONNECT tunnel, which has no path.
+    var rowDetail: String {
+        path.isEmpty ? ":\(port)" : path
     }
 
     var statusCodeCategory: String? {
